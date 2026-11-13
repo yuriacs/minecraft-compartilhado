@@ -88,3 +88,5 @@ Quem tem o repositório clonado abre a interface (ou o `status.bat`) para ver qu
 ## Aviso
 
 Projeto independente, sem vínculo com a Mojang ou a Microsoft. Para rodar o servidor, cada host precisa aceitar a EULA do Minecraft.
+
+O código deste repositório está sob a licença [MIT](LICENSE).
