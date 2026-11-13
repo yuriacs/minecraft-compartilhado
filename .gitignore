@@ -1,0 +1,13 @@
+# Baixados automaticamente em cada PC
+.runtime/
+server/*.jar
+
+# Gerados pelo servidor, nao fazem parte do mundo
+server/logs/
+server/cache/
+server/libraries/
+server/versions/
+server/crash-reports/
+server/.console_history
+server/plugins/.paper-remapped/
+**/session.lock
