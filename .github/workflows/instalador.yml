@@ -87,9 +87,9 @@ jobs:
           $notas = @"
           Baixe o **MinecraftCompartilhado-Setup.exe** abaixo e execute.
 
-          O instalador ainda nao tem assinatura digital, entao o Windows pode mostrar o aviso "O Windows protegeu o computador". Clique em **Mais informacoes** e depois em **Executar assim mesmo**.
+          O instalador ainda não tem assinatura digital, então o Windows pode mostrar o aviso "O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**.
 
-          Este arquivo foi gerado automaticamente pelo GitHub a partir do codigo deste repositorio. SHA-256:
+          Este arquivo foi gerado automaticamente pelo GitHub a partir do código deste repositório. SHA-256:
           ``$hash``
           "@
           gh release create $env:GITHUB_REF_NAME dist\MinecraftCompartilhado-Setup.exe --title "Minecraft Compartilhado $env:GITHUB_REF_NAME" --notes $notas
