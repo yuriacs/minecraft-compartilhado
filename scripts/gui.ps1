@@ -158,6 +158,8 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
 '@
 
 $Window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $Xaml))
+$IconPath = Join-Path $PSScriptRoot 'app.ico'
+if (Test-Path $IconPath) { try { $Window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$IconPath) } catch { } }
 foreach ($name in 'Dot', 'StatusTitle', 'StatusDetail', 'AddressRow', 'AddressText', 'CopyBtn',
                   'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'OptionsBtn', 'MenuRestore', 'MenuPrune', 'MenuDiscord',
                   'LogBox', 'CommandBox', 'SendBtn', 'PlayersPanel', 'PlayersTitle', 'PlayersList', 'NickBox',
@@ -656,6 +658,7 @@ function Show-RestoreDialog {
 '@
     $dialog = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $dialogXaml))
     $dialog.Owner = $Window
+    $dialog.Icon = $Window.Icon
     $list = $dialog.FindName('SaveList')
     $ok = $dialog.FindName('OkBtn')
     foreach ($save in $saves) { [void]$list.Items.Add((Format-Save $save)) }

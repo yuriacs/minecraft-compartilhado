@@ -1,0 +1,95 @@
+# Gera o instalador (Setup.exe) e publica na pagina de Releases.
+#
+# Dispara quando uma tag de versao e enviada (ex.: v1.0.0). Como o instalador e
+# compilado aqui, a partir do codigo publico, qualquer pessoa pode conferir de
+# onde ele veio.
+name: Instalador
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  instalador:
+    # so no repositorio original: copias criadas por "Use this template" nao geram instalador
+    if: github.repository == 'yuriacs/minecraft-compartilhado'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar o Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Definir a versao
+        id: versao
+        shell: pwsh
+        run: |
+          $versao = '0.0.0'
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $versao = $env:GITHUB_REF_NAME.TrimStart('v') }
+          "versao=$versao" >> $env:GITHUB_OUTPUT
+
+      - name: Conferir os scripts
+        shell: powershell
+        run: |
+          foreach ($arquivo in 'instalador\launcher.ps1', 'scripts\gui.ps1', 'scripts\host.ps1') {
+            $erros = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $arquivo), [ref]$null, [ref]$erros)
+            if ($erros.Count -gt 0) { $erros | Format-List; throw "$arquivo tem erro de sintaxe" }
+          }
+
+      - name: Compilar o instalador
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.versao.outputs.versao }}" instalador\setup.iss
+          if ($LASTEXITCODE -ne 0) { throw 'A compilacao do instalador falhou' }
+
+      - name: Testar a instalacao e a desinstalacao
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path dist\MinecraftCompartilhado-Setup.exe).Path
+          Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=desktopicon' -Wait
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\MinecraftCompartilhado'
+          foreach ($arquivo in 'launcher.ps1', 'app.ico', 'LICENSE.txt', 'unins000.exe') {
+            if (-not (Test-Path (Join-Path $app $arquivo))) { throw "Faltou instalar: $arquivo" }
+          }
+          $atalho = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Minecraft Compartilhado.lnk'
+          if (-not (Test-Path $atalho)) { throw 'Faltou o atalho do menu Iniciar' }
+          $alvo = (New-Object -ComObject WScript.Shell).CreateShortcut($atalho)
+          "Atalho: $($alvo.TargetPath) $($alvo.Arguments)"
+          if ($alvo.Arguments -notlike '*launcher.ps1*') { throw 'O atalho nao aponta para o launcher' }
+
+          Start-Process (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path (Join-Path $app 'launcher.ps1')) { throw 'A desinstalacao deixou o programa para tras' }
+          if (Test-Path $atalho) { throw 'A desinstalacao deixou o atalho para tras' }
+
+      - name: Guardar o instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: MinecraftCompartilhado-Setup
+          path: dist/MinecraftCompartilhado-Setup.exe
+
+      - name: Publicar a release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $hash = (Get-FileHash dist\MinecraftCompartilhado-Setup.exe -Algorithm SHA256).Hash
+          $notas = @"
+          Baixe o **MinecraftCompartilhado-Setup.exe** abaixo e execute.
+
+          O instalador ainda nao tem assinatura digital, entao o Windows pode mostrar o aviso "O Windows protegeu o computador". Clique em **Mais informacoes** e depois em **Executar assim mesmo**.
+
+          Este arquivo foi gerado automaticamente pelo GitHub a partir do codigo deste repositorio. SHA-256:
+          ``$hash``
+          "@
+          gh release create $env:GITHUB_REF_NAME dist\MinecraftCompartilhado-Setup.exe --title "Minecraft Compartilhado $env:GITHUB_REF_NAME" --notes $notas

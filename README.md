@@ -8,17 +8,18 @@ O mundo fica guardado num repositório privado do GitHub. Qualquer pessoa do gru
 - Backup automático a cada 20 minutos enquanto o servidor está aberto.
 - Se o PC do host cair, outra pessoa assume a partir do último backup.
 - Tudo por uma janela: hostear, parar e salvar, ver quem está online, whitelist e admin, restaurar um save anterior.
-- Instalador de um arquivo só para os amigos, e avisos no Discord quando o servidor abre e fecha.
+- Instalador próprio (com ícone e desinstalador, sem pedir permissão de administrador) e avisos no Discord quando o servidor abre e fecha.
 - Java e Paper são baixados sozinhos.
 
 Funciona em **Windows**. Quem só vai jogar precisa apenas do Minecraft Java original.
 
-Na pasta só há dois arquivos para usar:
+## Baixar
 
-| Arquivo | Para quê |
-|---|---|
-| `Instalar Minecraft Compartilhado.bat` | Instalar num PC novo. É o arquivo que se manda para os amigos. |
-| `Minecraft Compartilhado.bat` | Abrir o programa. Tudo o resto se faz pela janela dele. |
+**[Baixe o instalador na página de Releases](https://github.com/yuriacs/minecraft-compartilhado/releases/latest)** (arquivo `MinecraftCompartilhado-Setup.exe`).
+
+O instalador é gerado automaticamente pelo GitHub a partir do código deste repositório ([veja como](.github/workflows/instalador.yml)), e a página de cada versão traz o SHA-256 do arquivo. Ele ainda não tem assinatura digital, então o Windows pode mostrar "O Windows protegeu o computador": clique em **Mais informações → Executar assim mesmo**.
+
+Antes de instalar, o seu grupo precisa ter um servidor: veja a seção seguinte se você é quem vai criar.
 
 ## Este repositório é um modelo
 
@@ -31,8 +32,9 @@ Não dá para hostear clonando este repositório diretamente, porque ninguém al
 1. Entre na sua conta do GitHub e clique em **Use this template → Create a new repository**, no topo desta página.
 2. Escolha um nome e marque **Private**. O repositório vai guardar o mundo, os nicks dos jogadores e o endereço de quem hosteia, então não deixe público.
 3. No repositório novo, vá em **Settings → Collaborators** e adicione os amigos que vão poder hostear.
-4. No site do GitHub, abra o arquivo `Instalar Minecraft Compartilhado.bat` do seu repositório, clique no lápis (**Edit**) e preencha a linha `set "REPO_URL="` com o link do seu repositório, por exemplo `set "REPO_URL=https://github.com/SEU-USUARIO/SEU-REPOSITORIO.git"`. Clique em **Commit changes** e depois baixe o arquivo (**Download raw file**): é ele que você manda para os amigos.
-5. Rode o instalador no seu próprio PC, abra o programa e clique em **Hostear servidor**. Na primeira vez o mundo é gerado; feche com **Parar e salvar** para ele subir ao GitHub.
+4. Instale o programa (seção "Instalar" abaixo) e, na primeira tela, cole o link do repositório que você acabou de criar.
+5. Clique em **Hostear servidor**. Na primeira vez o mundo é gerado; feche com **Parar e salvar** para ele subir ao GitHub.
+6. Passe para os amigos o link do repositório do grupo e o link do instalador.
 
 Servidores novos nascem com a whitelist ligada e vazia. Na primeira vez, com o servidor aberto, desmarque **Só entra quem está na whitelist** ou ponha os nicks do grupo nela, senão ninguém entra.
 
@@ -40,7 +42,10 @@ Servidores novos nascem com a whitelist ligada e vazia. Na primeira vez, com o s
 
 Cada pessoa que for hostear precisa de uma conta no GitHub convidada como colaboradora do repositório do grupo, com o convite já aceito.
 
-Dê dois cliques no `Instalar Minecraft Compartilhado.bat` que o dono do grupo mandou. Ele instala o Git se faltar, baixa o servidor para `C:\MinecraftCompartilhado`, pergunta seu nick e cria o atalho **Minecraft Compartilhado** na área de trabalho. Se o instalador vier sem o link do grupo preenchido, ele pede o link na hora. Se o Windows mostrar um aviso de segurança por ser um arquivo recebido de fora, escolha executar mesmo assim.
+1. Baixe o `MinecraftCompartilhado-Setup.exe` na [página de Releases](https://github.com/yuriacs/minecraft-compartilhado/releases/latest) e execute. Ele não pede permissão de administrador e cria o atalho **Minecraft Compartilhado** no menu Iniciar e na área de trabalho.
+2. Na primeira vez que abrir, cole o **link do grupo** (o endereço do repositório privado do grupo, que o dono passa) e escolha seu nick. O programa instala o Git se faltar e baixa o servidor para `C:\MinecraftCompartilhado`. Se abrir uma janela de login do GitHub, entre com a conta que foi convidada.
+
+Para remover, use **Configurações → Aplicativos** do Windows. A pasta do mundo não é apagada junto.
 
 ## Hostear
 

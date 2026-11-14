@@ -11,3 +11,6 @@ server/crash-reports/
 server/.console_history
 server/plugins/.paper-remapped/
 **/session.lock
+
+# Instalador gerado localmente
+dist/
