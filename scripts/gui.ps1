@@ -21,7 +21,7 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
 [xml]$Xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Minecraft Compartilhado" Width="800" Height="660" MinWidth="640" MinHeight="500"
+        Title="Minecraft Compartilhado" Width="980" Height="760" MinWidth="780" MinHeight="640"
         Background="#161B22" WindowStartupLocation="CenterScreen"
         FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
   <Window.Resources>
@@ -50,6 +50,11 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
           </ControlTemplate>
         </Setter.Value>
       </Setter>
+    </Style>
+    <Style x:Key="SmallBtn" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Padding" Value="6,7"/>
+      <Setter Property="Margin" Value="0,0,6,6"/>
+      <Setter Property="FontSize" Value="12.5"/>
     </Style>
   </Window.Resources>
 
@@ -90,15 +95,53 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
       <Button x:Name="PrimaryBtn" Style="{StaticResource Btn}" DockPanel.Dock="Left"/>
       <Button x:Name="SecondaryBtn" Style="{StaticResource Btn}" DockPanel.Dock="Left"/>
       <Button x:Name="RefreshBtn" Style="{StaticResource Btn}" Content="Atualizar" DockPanel.Dock="Right" Margin="0"/>
-      <Button x:Name="DiscordBtn" Style="{StaticResource Btn}" Content="Avisos no Discord" DockPanel.Dock="Right"/>
+      <Button x:Name="OptionsBtn" Style="{StaticResource Btn}" Content="Opções ▾" DockPanel.Dock="Right">
+        <Button.ContextMenu>
+          <ContextMenu>
+            <MenuItem x:Name="MenuRestore" Header="Restaurar um save anterior..."/>
+            <MenuItem x:Name="MenuPrune" Header="Compactar o histórico de saves..."/>
+            <Separator/>
+            <MenuItem x:Name="MenuDiscord" Header="Avisos no Discord..."/>
+          </ContextMenu>
+        </Button.ContextMenu>
+      </Button>
     </DockPanel>
 
-    <!-- console -->
-    <Border Grid.Row="3" Background="#0D1117" CornerRadius="8" Padding="4">
-      <TextBox x:Name="LogBox" IsReadOnly="True" Background="Transparent" Foreground="#C9D1D9"
-               BorderThickness="0" FontFamily="Consolas" FontSize="12.5" TextWrapping="Wrap"
-               VerticalScrollBarVisibility="Auto" Padding="8"/>
-    </Border>
+    <!-- console + jogadores -->
+    <Grid Grid.Row="3">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <Border Background="#0D1117" CornerRadius="8" Padding="4">
+        <TextBox x:Name="LogBox" IsReadOnly="True" Background="Transparent" Foreground="#C9D1D9"
+                 BorderThickness="0" FontFamily="Consolas" FontSize="12.5" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" Padding="8"/>
+      </Border>
+
+      <!-- so aparece com o servidor aberto neste PC -->
+      <Border x:Name="PlayersPanel" Grid.Column="1" Width="260" Margin="12,0,0,0" Background="#21262D"
+              CornerRadius="8" Padding="14" Visibility="Collapsed">
+        <DockPanel>
+          <TextBlock x:Name="PlayersTitle" DockPanel.Dock="Top" Text="Jogadores online (0)" FontWeight="SemiBold"/>
+          <StackPanel DockPanel.Dock="Bottom">
+            <TextBlock Text="Nick do jogador (ou clique nele na lista)" Foreground="#9DA7B3" FontSize="12" Margin="0,10,0,4"/>
+            <TextBox x:Name="NickBox" Background="#0D1117" Foreground="#E6EDF3" CaretBrush="#E6EDF3"
+                     BorderBrush="#30363D" Padding="8,6" Margin="0,0,0,8"/>
+            <UniformGrid Columns="2" Margin="0,0,-6,0">
+              <Button x:Name="WlAddBtn" Style="{StaticResource SmallBtn}" Content="Pôr na whitelist"/>
+              <Button x:Name="WlRemoveBtn" Style="{StaticResource SmallBtn}" Content="Tirar da whitelist"/>
+              <Button x:Name="OpBtn" Style="{StaticResource SmallBtn}" Content="Dar admin (op)"/>
+              <Button x:Name="DeopBtn" Style="{StaticResource SmallBtn}" Content="Tirar admin"/>
+            </UniformGrid>
+            <Button x:Name="KickBtn" Style="{StaticResource SmallBtn}" Content="Expulsar do servidor" Margin="0,0,0,10"/>
+            <CheckBox x:Name="WhitelistCheck" Content="Só entra quem está na whitelist" Foreground="#E6EDF3" FontSize="12.5"/>
+          </StackPanel>
+          <ListBox x:Name="PlayersList" Background="#0D1117" Foreground="#E6EDF3" BorderThickness="0"
+                   Margin="0,8,0,0" Padding="4" FontSize="13.5" MinHeight="96"/>
+        </DockPanel>
+      </Border>
+    </Grid>
 
     <Grid Grid.Row="4" Margin="0,10,0,0">
       <Grid.ColumnDefinitions>
@@ -116,14 +159,22 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
 
 $Window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $Xaml))
 foreach ($name in 'Dot', 'StatusTitle', 'StatusDetail', 'AddressRow', 'AddressText', 'CopyBtn',
-                  'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'DiscordBtn', 'LogBox', 'CommandBox', 'SendBtn') {
+                  'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'OptionsBtn', 'MenuRestore', 'MenuPrune', 'MenuDiscord',
+                  'LogBox', 'CommandBox', 'SendBtn', 'PlayersPanel', 'PlayersTitle', 'PlayersList', 'NickBox',
+                  'WlAddBtn', 'WlRemoveBtn', 'OpBtn', 'DeopBtn', 'KickBtn', 'WhitelistCheck') {
     Set-Variable -Name $name -Value $Window.FindName($name) -Scope Script
 }
 
 # ---------------------------------------------------------------- estado
 
 $script:Proc           = $null   # processo do host.ps1 em andamento (um por vez)
-$script:Kind           = $null   # 'status' | 'host' | 'save' | 'config'
+$script:Kind           = $null   # 'status' | 'saves' | 'host' | 'save' | 'maint'
+$script:MaintTitle     = ''      # textos mostrados durante uma tarefa de manutencao
+$script:MaintDetail    = ''
+$script:Saves          = $null   # resposta do host.ps1 -ListSaves
+$script:AfterSaves     = $null   # o que abrir quando a lista de saves chegar: 'restore' | 'prune'
+$script:CanMaintain    = $false  # restaurar/compactar/configurar so com o servidor fechado
+$script:Players        = New-Object System.Collections.Generic.List[string]
 $script:Phase          = $null   # do host: 'sync' | 'running' | 'ready' | 'saving'
 $script:OutTask        = $null
 $script:ErrTask        = $null
@@ -203,9 +254,9 @@ function Update-Ui {
         $detail = 'Não feche esta janela até terminar.'
         $primaryText = 'Enviando...'; $primaryEnabled = $false
     }
-    elseif ($busy -and $script:Kind -eq 'config') {
-        $dot = 'yellow'; $title = 'Configurando os avisos do Discord...'
-        $detail = 'Testando o link e gravando a configuração para o grupo todo.'
+    elseif ($busy -and $script:Kind -eq 'maint') {
+        $dot = 'yellow'; $title = $script:MaintTitle
+        $detail = $script:MaintDetail
         $primaryText = 'Aguarde...'; $primaryEnabled = $false
     }
     elseif (-not $st) {
@@ -256,7 +307,7 @@ function Update-Ui {
     }
 
     # durante uma checagem de status os botoes ficam travados
-    if ($busy -and $script:Kind -eq 'status') { $primaryEnabled = $false }
+    if ($busy -and $script:Kind -in 'status', 'saves') { $primaryEnabled = $false }
 
     $script:Dot.Fill = $Colors[$dot]
     $script:StatusTitle.Text = $title
@@ -274,12 +325,58 @@ function Update-Ui {
     Set-Button $script:SecondaryBtn $secondaryText '#30363D' (-not $busy)
 
     $script:RefreshBtn.IsEnabled = -not $busy
-    # a configuracao do Discord vale para o grupo e so pode mudar com o servidor fechado
-    $script:DiscordBtn.IsEnabled = (-not $busy) -and $st -and (-not $st.trava) -and (-not $st.pendente) -and (-not $st.rodandoAqui)
-    $script:DiscordBtn.Content = if ($st -and $st.discord) { 'Avisos no Discord: ligados' } else { 'Ligar avisos no Discord' }
+    # restaurar, compactar e configurar valem para o grupo todo e so podem ser
+    # feitos com o servidor fechado e nada pendente neste PC
+    $script:CanMaintain = [bool]((-not $busy) -and $st -and (-not $st.trava) -and (-not $st.pendente) -and (-not $st.rodandoAqui))
+    $script:OptionsBtn.IsEnabled = -not $busy
+    $script:MenuDiscord.Header = if ($st -and $st.discord) { 'Avisos no Discord: ligados...' } else { 'Ligar avisos no Discord...' }
     $serverUp = $busy -and $script:Kind -eq 'host' -and $script:Phase -in 'running', 'ready' -and -not $script:Stopping
     $script:CommandBox.IsEnabled = $serverUp
     $script:SendBtn.IsEnabled = $serverUp
+    $script:PlayersPanel.Visibility = if ($serverUp) { 'Visible' } else { 'Collapsed' }
+}
+
+# ---------------------------------------------------------------- jogadores
+
+function Update-Players {
+    $script:PlayersList.Items.Clear()
+    foreach ($name in $script:Players) { [void]$script:PlayersList.Items.Add($name) }
+    $script:PlayersTitle.Text = "Jogadores online ($($script:Players.Count))"
+}
+
+# Acompanha quem esta online pelas mensagens do proprio servidor.
+function Watch-Players($line) {
+    if ($line -match '\]: (\S+) joined the game$') {
+        if (-not $script:Players.Contains($Matches[1])) { $script:Players.Add($Matches[1]) }
+    } elseif ($line -match '\]: (\S+) left the game$') {
+        [void]$script:Players.Remove($Matches[1])
+    } elseif ($line -match 'There are \d+ of a max of \d+ players online:(.*)$') {
+        # resposta do comando "list": acerta a lista inteira
+        $script:Players.Clear()
+        $Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { $script:Players.Add($_) }
+    } else {
+        return
+    }
+    Update-Players
+}
+
+function Read-WhitelistOn {
+    $file = Join-Path $Root 'server\server.properties'
+    if (-not (Test-Path $file)) { return $false }
+    return [bool](@(Get-Content $file) -match '^white-list=true')
+}
+
+# Manda ao servidor um comando sobre o jogador do campo de nick.
+function Send-PlayerCommand($template) {
+    $nick = $script:NickBox.Text.Trim()
+    if ($nick -notmatch '^[.\w]{2,32}$') {
+        [Windows.MessageBox]::Show($Window, 'Digite o nick do jogador, ou clique nele na lista de quem está online.',
+            'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+        return
+    }
+    $command = $template -f $nick
+    Add-Log "> $command"
+    Send-ToHost $command
 }
 
 # ---------------------------------------------------------------- host.ps1
@@ -301,6 +398,7 @@ function Start-HostScript($kind, $extraArgs) {
 
     $script:Kind = $kind
     $script:Phase = if ($kind -eq 'host') { 'sync' } else { $null }
+    if ($kind -eq 'host') { $script:Players.Clear(); Update-Players }
     $script:Stopping = $false
     $script:StatusLines = @()
     $script:Proc = [System.Diagnostics.Process]::Start($psi)
@@ -351,6 +449,9 @@ function Receive-Line($line) {
                 $script:Status = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
                 $script:StatusFailed = $false
             }
+            'SAVES' {
+                $script:Saves = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
+            }
             'STATE' {
                 $script:Phase = $parts[1]
                 if ($parts[1] -eq 'running') { $script:Address = $parts[2] }
@@ -364,7 +465,7 @@ function Receive-Line($line) {
         return
     }
 
-    if ($script:Kind -eq 'status') {
+    if ($script:Kind -in 'status', 'saves') {
         $script:StatusLines += $line
         return
     }
@@ -373,8 +474,10 @@ function Receive-Line($line) {
     # O Paper escreve "Done (12.3s)!" quando o mundo terminou de carregar.
     if ($script:Kind -eq 'host' -and $script:Phase -eq 'running' -and $line -match '\]: Done \(') {
         $script:Phase = 'ready'
+        $script:WhitelistCheck.IsChecked = Read-WhitelistOn
         Update-Ui
     }
+    if ($script:Kind -eq 'host') { Watch-Players $line }
 }
 
 # Le o que ja chegou de uma das saidas. Devolve a proxima leitura pendente,
@@ -407,6 +510,16 @@ function Complete-HostScript {
             $script:StatusLines | Where-Object { $_.Trim() } | ForEach-Object { Add-Log $_ }
         }
         Update-Ui
+    } elseif ($kind -eq 'saves') {
+        Update-Ui
+        if ($code -ne 0 -or -not $script:Saves) {
+            $script:StatusLines | Where-Object { $_.Trim() } | ForEach-Object { Add-Log $_ }
+            Add-Log 'Não consegui ler a lista de saves.'
+        } elseif ($script:AfterSaves -eq 'restore') {
+            Show-RestoreDialog
+        } elseif ($script:AfterSaves -eq 'prune') {
+            Show-PruneDialog
+        }
     } else {
         Add-Log ''
         Start-HostScript 'status' '-Status'   # mostra o resultado real apos hostear/salvar
@@ -470,7 +583,25 @@ $PrimaryBtn.Add_Click({ Invoke-Action $script:PrimaryAction })
 $SecondaryBtn.Add_Click({ Invoke-Action $script:SecondaryAction })
 $RefreshBtn.Add_Click({ Start-HostScript 'status' '-Status' })
 $SendBtn.Add_Click({ Send-Command })
-$DiscordBtn.Add_Click({
+# ---------------------------------------------------------------- opcoes
+
+function Start-Maintenance($title, $detail, $arguments) {
+    $script:MaintTitle = $title
+    $script:MaintDetail = $detail
+    $script:LogBox.Clear()
+    Start-HostScript 'maint' $arguments
+}
+
+# As opcoes mexem no repositorio do grupo todo: so com o servidor fechado.
+function Test-CanMaintain {
+    if ($script:CanMaintain) { return $true }
+    [Windows.MessageBox]::Show($Window,
+        'Isso só pode ser feito com o servidor fechado e sem nada pendente para enviar neste PC.',
+        'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+    return $false
+}
+
+function Show-DiscordDialog {
     Add-Type -AssemblyName Microsoft.VisualBasic
     $prompt = "Cole aqui o link do webhook do canal onde os avisos devem aparecer.`n`n" +
               "No Discord: Editar canal > Integrações > Webhooks > Novo webhook > Copiar URL do webhook.`n`n" +
@@ -489,8 +620,111 @@ $DiscordBtn.Add_Click({
             'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
         return
     }
-    $script:LogBox.Clear()
-    Start-HostScript 'config' "-SetWebhook `"$url`""
+    Start-Maintenance 'Configurando os avisos do Discord...' 'Testando o link e gravando a configuração para o grupo todo.' "-SetWebhook `"$url`""
+}
+
+# Texto de um save na lista: "13/11/2026 18:27   Mundo salvo por Fulano"
+function Format-Save($save) {
+    $text = $save.texto -replace '\s*\(\d{4}-\d\d-\d\d \d\d:\d\d\)$', ''
+    $text = $text -replace '^Backup automatico \((.+?), \d\d:\d\d\)$', 'Backup automático ($1)'
+    return "$($save.quando)    $text"
+}
+
+function Show-RestoreDialog {
+    $saves = @($script:Saves.saves)
+    if ($saves.Count -eq 0) {
+        [Windows.MessageBox]::Show($Window, 'Ainda não há nenhum save guardado.', 'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+        return
+    }
+    [xml]$dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Restaurar um save anterior" Width="680" Height="520" MinWidth="420" MinHeight="320"
+        Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
+  <DockPanel Margin="18">
+    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,0,0,12"
+               Text="Escolha para qual save o mundo deve voltar. O mundo de agora não é apagado: ele continua nesta lista e dá para voltar a ele depois."/>
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+      <Button Name="CancelBtn" Content="Cancelar" Padding="18,9" Margin="0,0,10,0" IsCancel="True"/>
+      <Button Name="OkBtn" Content="Restaurar este save" Padding="18,9" IsEnabled="False"/>
+    </StackPanel>
+    <ListBox Name="SaveList" Background="#0D1117" Foreground="#E6EDF3" BorderThickness="0" Padding="6"
+             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+             FontFamily="Consolas" FontSize="13"/>
+  </DockPanel>
+</Window>
+'@
+    $dialog = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $dialogXaml))
+    $dialog.Owner = $Window
+    $list = $dialog.FindName('SaveList')
+    $ok = $dialog.FindName('OkBtn')
+    foreach ($save in $saves) { [void]$list.Items.Add((Format-Save $save)) }
+    if ($saves.Count -gt 0) { $list.Items[0] = "$($list.Items[0])    (mundo atual)" }
+    $list.Add_SelectionChanged({ $ok.IsEnabled = ($list.SelectedIndex -gt 0) }.GetNewClosure())
+    $ok.Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
+    if (-not $dialog.ShowDialog()) { return }
+
+    $chosen = $saves[$list.SelectedIndex]
+    $answer = [Windows.MessageBox]::Show($Window,
+        "Voltar o mundo para o save de $($chosen.quando)?`n`nTudo que foi jogado depois disso sai do mundo (mas continua guardado na lista de saves).",
+        'Minecraft Compartilhado', 'YesNo', 'Warning')
+    if ($answer -ne 'Yes') { return }
+    Start-Maintenance 'Restaurando o mundo...' "Voltando para o save de $($chosen.quando) e enviando para o GitHub." "-Restore $($chosen.id)"
+}
+
+function Show-PruneDialog {
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $total = [int]$script:Saves.total
+    $prompt = "O histórico tem $total saves guardados (a pasta do histórico ocupa $($script:Saves.mb) MB neste PC).`n`n" +
+              "Quantos dos saves mais recentes você quer manter?`n`n" +
+              'Os mais antigos são apagados de vez e não poderão mais ser restaurados. O mundo atual não muda.'
+    $typed = [Microsoft.VisualBasic.Interaction]::InputBox($prompt, 'Compactar o histórico de saves', '30').Trim()
+    if (-not $typed) { return }
+    $keep = 0
+    if (-not [int]::TryParse($typed, [ref]$keep) -or $keep -lt 5) {
+        [Windows.MessageBox]::Show($Window, 'Digite um número a partir de 5.', 'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+        return
+    }
+    if ($total -le $keep) {
+        [Windows.MessageBox]::Show($Window, "O histórico só tem $total saves. Não há nada para compactar ainda.",
+            'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+        return
+    }
+    $answer = [Windows.MessageBox]::Show($Window,
+        "Apagar de vez os $($total - $keep) saves mais antigos e manter os $keep mais recentes?`n`nIsso não pode ser desfeito.",
+        'Minecraft Compartilhado', 'YesNo', 'Warning')
+    if ($answer -ne 'Yes') { return }
+    Start-Maintenance 'Compactando o histórico...' 'Reescrevendo o histórico e enviando para o GitHub. Pode levar alguns minutos em mundos grandes.' "-Prune $keep"
+}
+
+$OptionsBtn.Add_Click({
+    $menu = $script:OptionsBtn.ContextMenu
+    $menu.PlacementTarget = $script:OptionsBtn
+    $menu.Placement = 'Bottom'
+    $menu.IsOpen = $true
+})
+$MenuDiscord.Add_Click({ if (Test-CanMaintain) { Show-DiscordDialog } })
+$MenuRestore.Add_Click({
+    if (Test-CanMaintain) { $script:AfterSaves = 'restore'; $script:Saves = $null; Start-HostScript 'saves' '-ListSaves' }
+})
+$MenuPrune.Add_Click({
+    if (Test-CanMaintain) { $script:AfterSaves = 'prune'; $script:Saves = $null; Start-HostScript 'saves' '-ListSaves' }
+})
+
+# ---------------------------------------------------------------- jogadores (botoes)
+
+$PlayersList.Add_SelectionChanged({
+    if ($script:PlayersList.SelectedItem) { $script:NickBox.Text = [string]$script:PlayersList.SelectedItem }
+})
+$WlAddBtn.Add_Click({ Send-PlayerCommand 'whitelist add {0}' })
+$WlRemoveBtn.Add_Click({ Send-PlayerCommand 'whitelist remove {0}' })
+$OpBtn.Add_Click({ Send-PlayerCommand 'op {0}' })
+$DeopBtn.Add_Click({ Send-PlayerCommand 'deop {0}' })
+$KickBtn.Add_Click({ Send-PlayerCommand 'kick {0}' })
+$WhitelistCheck.Add_Click({
+    $command = if ($script:WhitelistCheck.IsChecked) { 'whitelist on' } else { 'whitelist off' }
+    Add-Log "> $command"
+    Send-ToHost $command
 })
 $CommandBox.Add_KeyDown({ if ($_.Key -eq 'Return') { Send-Command } })
 $CopyBtn.Add_Click({
@@ -500,7 +734,7 @@ $CopyBtn.Add_Click({
 $CopyBtn.Add_MouseLeave({ $script:CopyBtn.Content = 'Copiar endereço' })
 
 $Window.Add_Closing({
-    if (-not $script:Proc -or $script:Kind -eq 'status') { return }
+    if (-not $script:Proc -or $script:Kind -in 'status', 'saves') { return }
     if ($script:CloseWhenDone) { $_.Cancel = $true; return }   # ja esta fechando, so falta salvar
 
     $_.Cancel = $true

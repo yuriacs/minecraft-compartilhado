@@ -11,8 +11,11 @@ param(
     [switch]$Status,    # so mostra quem esta hosteando
     [switch]$Gui,       # chamado pela interface (scripts\gui.ps1): sem perguntas no console
     [int]$ParentPid,    # PID da interface; se ela morrer, o servidor e encerrado
-    [string]$SetWebhook # grava o link do webhook do Discord no config.json e sai
+    [string]$SetWebhook,# grava o link do webhook do Discord no config.json e sai
                         # ("ask" pergunta no console; "off" desliga os avisos)
+    [switch]$ListSaves, # lista os saves guardados no historico
+    [string]$Restore,   # volta o mundo para o save indicado (hash do commit)
+    [int]$Prune         # compacta o historico, mantendo so os ultimos N saves
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +28,8 @@ $RuntimeDir = Join-Path $Root '.runtime'
 $LockPath   = Join-Path $Root 'host.lock.json'
 $LockName   = 'host.lock.json'
 $PidPath    = Join-Path $RuntimeDir 'host.pid'
+$ConfigPath = Join-Path $PSScriptRoot 'config.json'
+if (-not (Test-Path $ConfigPath)) { $ConfigPath = Join-Path $Root 'config.json' }   # lugar antigo
 $UserAgent  = 'mc-compartilhado/1.0'
 
 # ---------------------------------------------------------------- helpers
@@ -232,7 +237,7 @@ function Save-AndRelease($closedMessage) {
         Write-Host ''
         Write-Host '!!! O MUNDO NAO FOI ENVIADO PARA O GITHUB !!!' -ForegroundColor Red
         Write-Host 'Seu progresso esta salvo so neste PC e a trava continua no seu nome.' -ForegroundColor Red
-        Write-Host 'Confira a internet e rode salvar.bat antes de qualquer outra pessoa hostear.' -ForegroundColor Red
+        Write-Host 'Confira a internet e use "Enviar mundo agora" antes de qualquer outra pessoa hostear.' -ForegroundColor Red
     }
 }
 
@@ -305,6 +310,63 @@ function Backup-World($server) {
     } else {
         Out-Line '    Nao consegui enviar o backup (sem internet?). Tento de novo no proximo.' 'Yellow'
     }
+}
+
+# As tarefas de manutencao (configurar, restaurar, compactar) criam commits
+# proprios. Com o servidor aberto eles atropelariam os backups do host, e com
+# algo pendente neste PC se misturariam a ele; por isso exigem tudo parado.
+function Assert-ServerIdle($what) {
+    if (Get-RemoteLock) { Fail "O servidor esta aberto. Espere fechar para $what." }
+    $ahead = 0
+    if ($HasRemoteBranch) { $ahead = [int](Invoke-Git rev-list --count "origin/$Branch..HEAD") }
+    if ((Read-Lock) -or $ahead -gt 0 -or (@() | & git -C $Root status --porcelain)) {
+        Fail 'Este PC tem uma sessao ou alteracoes que ainda nao foram enviadas. Envie o mundo primeiro.'
+    }
+    if ($HasRemoteBranch -and -not (Test-Git merge --ff-only "origin/$Branch")) {
+        Fail 'Seu repositorio local divergiu do GitHub.'
+    }
+}
+
+# Data de um commit no horario deste PC.
+function Get-CommitTime($commit) {
+    $epoch = [long](Invoke-Git log -1 --format=%ct $commit)
+    return [DateTimeOffset]::FromUnixTimeSeconds($epoch).LocalDateTime
+}
+
+# Cria um commit novo com os mesmos arquivos, autor e data de $source, em cima
+# de $parent (ou sem pai). Usado para compactar o historico: nada do mundo e
+# reescrito, so a "linha do tempo" fica mais curta.
+function Copy-Commit($source, $parent, $messageOverride) {
+    $meta = @(Invoke-Git log -1 '--format=%an%n%ae%n%aI%n%cn%n%ce%n%cI' $source)
+    if ($messageOverride) {
+        $message = $messageOverride
+    } else {
+        $message = (@(Invoke-Git log -1 --format=%B $source) -join "`n").TrimEnd()
+    }
+    $messageFile = Join-Path $RuntimeDir 'commit-msg.txt'
+    [IO.File]::WriteAllText($messageFile, $message + "`n")
+    $tree = '{0}^{{tree}}' -f $source
+    $env:GIT_AUTHOR_NAME = $meta[0];    $env:GIT_AUTHOR_EMAIL = $meta[1];    $env:GIT_AUTHOR_DATE = $meta[2]
+    $env:GIT_COMMITTER_NAME = $meta[3]; $env:GIT_COMMITTER_EMAIL = $meta[4]; $env:GIT_COMMITTER_DATE = $meta[5]
+    try {
+        if ($parent) {
+            return (Invoke-Git commit-tree $tree -p $parent -F $messageFile)
+        }
+        return (Invoke-Git commit-tree $tree -F $messageFile)
+    } finally {
+        foreach ($name in 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE') {
+            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+        }
+        Remove-Item $messageFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Um commit que guarda um estado do mundo (e nao so a trava ou a configuracao).
+$SavePattern = '^(Mundo salvo|Backup automatico|Mundo restaurado)'
+
+function Get-GitFolderMb {
+    $bytes = (Get-ChildItem (Join-Path $Root '.git') -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+    return [Math]::Round($bytes / 1MB, 1)
 }
 
 function Get-JavaMajor($exe) {
@@ -389,7 +451,7 @@ if (-not (Test-Git remote get-url origin)) {
     Fail "O repositorio nao tem um remoto 'origin'. Veja o README (secao 'Primeira configuracao')."
 }
 
-$Config = Get-Content (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json
+$Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $WebhookUrl = [string]$Config.discordWebhook   # vazio = sem avisos no Discord
 $BackupMinutes = 20   # intervalo do backup automatico; 0 desliga
 if ($null -ne $Config.backupMinutos) { $BackupMinutes = [double]$Config.backupMinutos }
@@ -406,9 +468,33 @@ if (-not (@() | & git -C $Root config user.email)) {
     Invoke-Git config user.email "$($Me -replace '\s', '')@users.noreply.github.com"
 }
 
+$OldRemote = $null   # onde o GitHub estava na ultima vez que este PC olhou
+if (Test-Git rev-parse --verify --quiet "refs/remotes/origin/$Branch") {
+    $OldRemote = (Invoke-Git rev-parse "origin/$Branch")
+}
+
 Say 'Buscando o estado mais recente no GitHub...'
 Invoke-Git fetch origin --prune --quiet
 $HasRemoteBranch = Test-Git rev-parse --verify --quiet "refs/remotes/origin/$Branch"
+
+# Quando alguem compacta o historico, o GitHub passa a ter commits diferentes
+# dos deste PC, e um "pull" normal nao funciona mais. Se este PC nao tem nada
+# proprio para enviar (so tinha o que ja estava no GitHub), basta adotar o
+# historico novo.
+if ($HasRemoteBranch -and $OldRemote) {
+    $newRemote = (Invoke-Git rev-parse "origin/$Branch")
+    $rewritten = ($newRemote -ne $OldRemote) -and -not (Test-Git merge-base --is-ancestor $OldRemote $newRemote)
+    if ($rewritten) {
+        $localLock = Read-Lock
+        $nothingOfMine = (Test-Git merge-base --is-ancestor HEAD $OldRemote) -and
+                         (-not $localLock -or $localLock.host -ne $Me) -and
+                         -not (@() | & git -C $Root status --porcelain)
+        if ($nothingOfMine) {
+            Invoke-Git reset --hard --quiet "origin/$Branch"
+            Say 'O historico do mundo foi compactado no GitHub. Este PC foi realinhado.' 'Yellow'
+        }
+    }
+}
 
 # ---------------------------------------------------------------- status
 
@@ -435,7 +521,7 @@ if ($Status) {
         Say 'Servidor ONLINE' 'Green'
         Show-Lock $remoteLock
     } else {
-        Say 'Ninguem esta hosteando agora. Rode iniciar.bat para hostear.' 'Yellow'
+        Say 'Ninguem esta hosteando agora.' 'Yellow'
     }
     exit 0
 }
@@ -460,17 +546,7 @@ if ($PSBoundParameters.ContainsKey('SetWebhook')) {
         Fail 'Isso nao parece um link de webhook do Discord. Ele comeca com https://discord.com/api/webhooks/'
     }
 
-    # A configuracao vai num commit proprio. Com o servidor aberto esse commit
-    # atropelaria os backups do host, entao so e permitido com ele fechado.
-    if (Get-RemoteLock) { Fail 'O servidor esta aberto. Espere fechar para mudar a configuracao.' }
-    $ahead = 0
-    if ($HasRemoteBranch) { $ahead = [int](Invoke-Git rev-list --count "origin/$Branch..HEAD") }
-    if ((Read-Lock) -or $ahead -gt 0 -or (@() | & git -C $Root status --porcelain)) {
-        Fail 'Este PC tem uma sessao ou alteracoes que ainda nao foram enviadas. Resolva isso primeiro (Enviar mundo agora / salvar.bat).'
-    }
-    if ($HasRemoteBranch -and -not (Test-Git merge --ff-only "origin/$Branch")) {
-        Fail 'Seu repositorio local divergiu do GitHub.'
-    }
+    Assert-ServerIdle 'mudar a configuracao'
 
     if ($url) {
         Say 'Mandando uma mensagem de teste para o Discord...'
@@ -480,10 +556,10 @@ if ($PSBoundParameters.ContainsKey('SetWebhook')) {
         }
     }
 
-    $Config = Get-Content (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json   # relido apos o merge
+    $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json   # relido apos o merge
     $Config | Add-Member -NotePropertyName discordWebhook -NotePropertyValue $url -Force
-    [IO.File]::WriteAllText((Join-Path $Root 'config.json'), ($Config | ConvertTo-Json) + "`n")
-    Invoke-Git add config.json
+    [IO.File]::WriteAllText($ConfigPath, ($Config | ConvertTo-Json) + "`n")
+    Invoke-Git add $ConfigPath
     if (Test-Git diff --cached --quiet) {
         Say 'A configuracao ja estava assim. Nada mudou.' 'Green'
         exit 0
@@ -499,6 +575,116 @@ if ($PSBoundParameters.ContainsKey('SetWebhook')) {
     } else {
         Say 'Avisos no Discord desligados.' 'Green'
     }
+    exit 0
+}
+
+# ---------------------------------------------------------------- saves
+
+if ($ListSaves) {
+    $ref = 'HEAD'
+    if ($HasRemoteBranch) { $ref = "origin/$Branch" }
+    $lines = @(Invoke-Git log $ref --first-parent '--format=%H|%ct|%s')
+    $saves = @()
+    $total = 0
+    foreach ($line in $lines) {
+        $parts = $line -split '\|', 3
+        # so os commits que guardam um estado do mundo interessam para restaurar
+        if ($parts[2] -notmatch $SavePattern) { continue }
+        $total++
+        if ($saves.Count -ge 200) { continue }   # a lista mostra os 200 mais recentes
+        $when = [DateTimeOffset]::FromUnixTimeSeconds([long]$parts[1]).LocalDateTime
+        $saves += [ordered]@{ id = $parts[0]; quando = $when.ToString('dd/MM/yyyy HH:mm'); texto = $parts[2] }
+    }
+    if ($Gui) {
+        $info = [ordered]@{ total = $total; mb = (Get-GitFolderMb); saves = @($saves) }
+        Emit ('SAVES@@' + ($info | ConvertTo-Json -Compress -Depth 4))
+    } else {
+        Say "Saves guardados: $total"
+        $saves | ForEach-Object { Write-Host "    $($_.id.Substring(0, 8))  $($_.quando)  $($_.texto)" }
+    }
+    exit 0
+}
+
+if ($PSBoundParameters.ContainsKey('Restore')) {
+    $target = $Restore.Trim()
+    if ($target -notmatch '^[0-9a-f]{7,40}$') { Fail 'Save invalido.' }
+    Assert-ServerIdle 'restaurar um save'
+    if (-not (Test-Git merge-base --is-ancestor $target HEAD)) {
+        Fail 'Esse save nao faz parte do historico deste servidor (ele pode ter sido compactado).'
+    }
+    $when = (Get-CommitTime $target).ToString('dd/MM/yyyy HH:mm')
+    Say "Restaurando o mundo para o save de $when..."
+    try {
+        # Troca so a pasta server/ pela daquele save. O programa e a configuracao
+        # continuam os atuais, e o mundo de agora fica guardado no historico.
+        Invoke-Git rm -r --quiet --ignore-unmatch server
+        Invoke-Git checkout $target -- server
+        Invoke-Git add -A
+    } catch {
+        Test-Git reset --hard --quiet HEAD | Out-Null
+        Fail "Nao consegui restaurar esse save. Nada foi alterado. ($_)"
+    }
+    if (Test-Git diff --cached --quiet) {
+        Say 'O mundo atual ja e igual a esse save. Nada mudou.' 'Green'
+        exit 0
+    }
+    Invoke-Git commit --quiet -m "Mundo restaurado para o save de $when (por $Me)"
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --hard --quiet 'HEAD~1'
+        Fail 'Nao consegui enviar para o GitHub. Nada foi alterado.'
+    }
+    Send-Discord "$([char]0x21A9) **$Me** restaurou o mundo para o save de $when." | Out-Null
+    Say "Mundo restaurado para o save de $when. O mundo que estava antes continua guardado no historico." 'Green'
+    exit 0
+}
+
+if ($PSBoundParameters.ContainsKey('Prune')) {
+    $keep = $Prune
+    if ($keep -lt 5) { Fail 'Mantenha pelo menos os 5 saves mais recentes.' }
+    Assert-ServerIdle 'compactar o historico'
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8   # nomes com acento nas mensagens dos commits
+    # do mais novo para o mais antigo; "hash|assunto"
+    $entries = @(Invoke-Git log --first-parent '--format=%H|%s' HEAD)
+    $commits = @($entries | ForEach-Object { ($_ -split '\|', 2)[0] })
+    $saveIndexes = @()
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        if ((($entries[$i] -split '\|', 2)[1]) -match $SavePattern) { $saveIndexes += $i }
+    }
+    # O novo comeco do historico e o commit logo antes do N-esimo save: assim os
+    # N saves mais recentes continuam inteiros e restauraveis.
+    $baseIndex = -1
+    if ($saveIndexes.Count -gt $keep) { $baseIndex = $saveIndexes[$keep - 1] + 1 }
+    if ($baseIndex -lt 1 -or $baseIndex -ge $commits.Count - 1) {
+        Say "O historico tem $($saveIndexes.Count) saves. Nada para compactar." 'Green'
+        exit 0
+    }
+    $oldTip = $commits[0]
+    $base = $commits[$baseIndex]
+    $baseWhen = (Get-CommitTime $base).ToString('dd/MM/yyyy HH:mm')
+    $sizeBefore = Get-GitFolderMb
+    Say "Compactando: ficam os $keep saves mais recentes; os $($saveIndexes.Count - $keep) mais antigos saem do historico..."
+    New-Item -ItemType Directory -Force $RuntimeDir | Out-Null
+
+    $newTip = Copy-Commit $base $null "Historico compactado: comeca em $baseWhen"
+    for ($i = $baseIndex - 1; $i -ge 0; $i--) {
+        $newTip = Copy-Commit $commits[$i] $newTip $null
+    }
+    # o mundo nao pode mudar em nada: o ultimo commit novo tem que ter os mesmos arquivos do antigo
+    $treeOld = Invoke-Git rev-parse ('{0}^{{tree}}' -f $oldTip)
+    $treeNew = Invoke-Git rev-parse ('{0}^{{tree}}' -f $newTip)
+    if ($treeOld -ne $treeNew) { Fail 'A conferencia do historico novo falhou. Nada foi alterado.' }
+
+    Invoke-Git update-ref "refs/heads/$Branch" $newTip $oldTip
+    @() | & git -C $Root push "--force-with-lease=${Branch}:$oldTip" origin $Branch | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Git update-ref "refs/heads/$Branch" $oldTip $newTip
+        Fail 'Nao consegui enviar o historico compactado para o GitHub. Nada foi alterado.'
+    }
+    # apaga deste PC os saves antigos (no GitHub eles somem sozinhos depois de um tempo)
+    Invoke-Git reflog expire --expire=now --all
+    Invoke-Git gc --prune=now --quiet
+    Send-Discord "$IconSwap **$Me** compactou o hist$([char]0xF3)rico do mundo: ficaram os $keep saves mais recentes." | Out-Null
+    Say "Historico compactado: de $($saveIndexes.Count) para $keep saves. Pasta .git neste PC: $sizeBefore MB -> $(Get-GitFolderMb) MB." 'Green'
     exit 0
 }
 
@@ -559,7 +745,7 @@ if (-not $resume) {
 
     if ($HasRemoteBranch) {
         if (-not (Test-Git merge --ff-only "origin/$Branch")) {
-            Fail "Seu repositorio local divergiu do GitHub. Se voce tem progresso nao enviado, rode salvar.bat; senao rode: git reset --hard origin/$Branch"
+            Fail "Seu repositorio local divergiu do GitHub. Se este PC nao tem progresso proprio para enviar, rode nesta pasta: git reset --hard origin/$Branch"
         }
     }
 
@@ -570,7 +756,7 @@ if (-not $resume) {
         if (-not $Force) {
             Write-Host ''
             Write-Host '    Entre no endereco acima para jogar.'
-            Write-Host '    Se essa pessoa caiu e nao vai voltar, rode forcar.bat para assumir.'
+            Write-Host '    Se essa pessoa caiu e nao vai voltar, use "Assumir o servidor".'
             exit 0
         }
         Write-Host ''
