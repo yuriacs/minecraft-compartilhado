@@ -23,7 +23,7 @@ Não dá para hostear clonando este repositório diretamente, porque ninguém al
 1. Entre na sua conta do GitHub e clique em **Use this template → Create a new repository**, no topo desta página.
 2. Escolha um nome e marque **Private**. O repositório vai guardar o mundo, os nicks dos jogadores e o endereço de quem hosteia, então não deixe público.
 3. No repositório novo, vá em **Settings → Collaborators** e adicione os amigos que vão poder hostear.
-4. Abra o arquivo `Instalar Minecraft Compartilhado.bat` do seu repositório no Bloco de Notas e preencha a linha `set "REPO_URL="` com o link do seu repositório, por exemplo `set "REPO_URL=https://github.com/SEU-USUARIO/SEU-REPOSITORIO.git"`. Salve, faça commit e guarde uma cópia: é esse arquivo que você manda para os amigos.
+4. No site do GitHub, abra o arquivo `Instalar Minecraft Compartilhado.bat` do seu repositório, clique no lápis (**Edit**) e preencha a linha `set "REPO_URL="` com o link do seu repositório, por exemplo `set "REPO_URL=https://github.com/SEU-USUARIO/SEU-REPOSITORIO.git"`. Clique em **Commit changes** e depois baixe o arquivo (**Download raw file**): é ele que você manda para os amigos.
 5. Rode o instalador no seu próprio PC e siga os passos de "Para hostear" abaixo. Na primeira vez o mundo é gerado; feche com **Parar e salvar** para ele subir ao GitHub.
 
 ## Para hostear
