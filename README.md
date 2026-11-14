@@ -62,7 +62,8 @@ O PC de quem hosteia precisa ficar ligado, com a janela aberta, enquanto os outr
 
 O servidor roda no PC de quem está hosteando, então os outros precisam alcançar esse PC. O programa não resolve isso sozinho; escolham um jeito:
 
-- **[Radmin VPN](https://www.radmin-vpn.com/)** (o mais simples): todos instalam e entram na mesma rede. O programa detecta o IP do Radmin do host e mostra o endereço pronto para copiar.
+- **Túnel do playit.gg**: quem joga não instala nada, só digita um endereço fixo. O programa sobe o túnel sozinho quando alguém hosteia. Veja como ligar em "Opções → Conexão por túnel", mais abaixo.
+- **[Radmin VPN](https://www.radmin-vpn.com/)**: todos instalam e entram na mesma rede. O programa detecta o IP do Radmin do host e mostra o endereço pronto para copiar.
 - **Outra VPN** (Tailscale, ZeroTier, Hamachi) ou **porta aberta no roteador** (25565): também funcionam, mas o programa não mostra o endereço; o host informa o próprio IP.
 
 Como o host muda, o endereço muda junto. A janela do programa e os avisos do Discord sempre mostram quem está hosteando.
@@ -85,6 +86,15 @@ O botão **Opções** só funciona com o servidor fechado, porque mexe no reposi
 - **Restaurar um save anterior**: mostra a lista de saves e backups e volta o mundo para o escolhido. O mundo de antes não é apagado; ele continua na lista.
 - **Compactar o histórico de saves**: mantém só os N saves mais recentes e apaga os mais antigos de vez, para o repositório não crescer sem limite. Os outros PCs do grupo se realinham sozinhos na próxima vez que abrirem o programa.
 - **Avisos no Discord**: o programa avisa num canal quando o servidor abre (com o endereço), fecha, ou muda de host. No Discord, no canal desejado: **Editar canal → Integrações → Webhooks → Novo webhook → Copiar URL do webhook**; cole o link na janela que abre. Para desligar, deixe o campo em branco. Quem tem o link do webhook consegue postar no canal, então ele só deve ficar em repositório privado.
+
+- **Conexão por túnel (sem Radmin)**: usa o [playit.gg](https://playit.gg) (plano gratuito) para dar ao servidor um endereço público. Quem hosteia sobe o túnel automaticamente; quem joga não instala nada, só digita o endereço. Como configurar:
+  1. Crie uma conta no playit.gg e adicione um agente do tipo **Docker**. Copie o valor que aparece depois de `SECRET_KEY=` (não precisa rodar o comando).
+  2. Em **Opções → Conexão por túnel**, cole a chave e salve, deixando o endereço em branco.
+  3. Clique em **Hostear servidor** uma vez. O programa baixa o agente oficial do playit, e o site passa a reconhecê-lo.
+  4. No site do playit, crie um túnel **Minecraft Java** para a porta local `25565` e copie o endereço que ele mostra (algo como `nome.gl.joinmc.link`).
+  5. Feche o servidor, volte em **Opções → Conexão por túnel** e preencha o endereço (a chave pode ficar em branco, ela é mantida).
+
+  Com o túnel, o servidor fica alcançável pela internet: mantenha ligada a opção **Só entra quem está na whitelist**. A conexão passa pelos servidores do playit, então o ping tende a ser um pouco maior que no Radmin. A chave fica no `config.json`; mantenha o repositório privado.
 
 ## Como funciona
 

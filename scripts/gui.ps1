@@ -102,6 +102,7 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
             <MenuItem x:Name="MenuPrune" Header="Compactar o histórico de saves..."/>
             <Separator/>
             <MenuItem x:Name="MenuDiscord" Header="Avisos no Discord..."/>
+            <MenuItem x:Name="MenuTunnel" Header="Conexão por túnel (sem Radmin)..."/>
           </ContextMenu>
         </Button.ContextMenu>
       </Button>
@@ -161,7 +162,7 @@ $Window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader
 $IconPath = Join-Path $PSScriptRoot 'app.ico'
 if (Test-Path $IconPath) { try { $Window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$IconPath) } catch { } }
 foreach ($name in 'Dot', 'StatusTitle', 'StatusDetail', 'AddressRow', 'AddressText', 'CopyBtn',
-                  'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'OptionsBtn', 'MenuRestore', 'MenuPrune', 'MenuDiscord',
+                  'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'OptionsBtn', 'MenuRestore', 'MenuPrune', 'MenuDiscord', 'MenuTunnel',
                   'LogBox', 'CommandBox', 'SendBtn', 'PlayersPanel', 'PlayersTitle', 'PlayersList', 'NickBox',
                   'WlAddBtn', 'WlRemoveBtn', 'OpBtn', 'DeopBtn', 'KickBtn', 'WhitelistCheck') {
     Set-Variable -Name $name -Value $Window.FindName($name) -Scope Script
@@ -332,6 +333,7 @@ function Update-Ui {
     $script:CanMaintain = [bool]((-not $busy) -and $st -and (-not $st.trava) -and (-not $st.pendente) -and (-not $st.rodandoAqui))
     $script:OptionsBtn.IsEnabled = -not $busy
     $script:MenuDiscord.Header = if ($st -and $st.discord) { 'Avisos no Discord: ligados...' } else { 'Ligar avisos no Discord...' }
+    $script:MenuTunnel.Header = if ($st -and $st.tunel) { 'Conexão por túnel: ligada...' } else { 'Conexão por túnel (sem Radmin)...' }
     $serverUp = $busy -and $script:Kind -eq 'host' -and $script:Phase -in 'running', 'ready' -and -not $script:Stopping
     $script:CommandBox.IsEnabled = $serverUp
     $script:SendBtn.IsEnabled = $serverUp
@@ -625,6 +627,81 @@ function Show-DiscordDialog {
     Start-Maintenance 'Configurando os avisos do Discord...' 'Testando o link e gravando a configuração para o grupo todo.' "-SetWebhook `"$url`""
 }
 
+# Liga, troca ou desliga o tunel do playit.gg para o grupo.
+function Show-TunnelDialog {
+    $isOn = [bool]($script:Status -and $script:Status.tunel)
+    [xml]$dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Conexão por túnel" Width="600" SizeToContent="Height" ResizeMode="NoResize"
+        Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
+  <StackPanel Margin="22">
+    <TextBlock TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,0,0,16"
+               Text="Com o túnel do playit.gg, quem hosteia abre um endereço público e os amigos entram por ele sem instalar o Radmin nem nada. Vale para o grupo todo."/>
+    <TextBlock Text="Chave secreta do agente" FontWeight="SemiBold"/>
+    <TextBlock TextWrapping="Wrap" Foreground="#9DA7B3" FontSize="12.5"
+               Text="No site do playit.gg, ao criar um agente do tipo Docker: é o valor que aparece depois de SECRET_KEY=. Ela fica guardada no repositório privado do grupo."/>
+    <TextBlock Name="KeepHint" TextWrapping="Wrap" Foreground="#3FB950" FontSize="12.5" Visibility="Collapsed"
+               Text="Já existe uma chave gravada. Deixe em branco para mantê-la."/>
+    <PasswordBox Name="KeyBox" Background="#0D1117" Foreground="#E6EDF3" BorderBrush="#30363D" Padding="10,8" Margin="0,5,0,16"/>
+    <TextBlock Text="Endereço público do túnel" FontWeight="SemiBold"/>
+    <TextBlock TextWrapping="Wrap" Foreground="#9DA7B3" FontSize="12.5"
+               Text="O endereço que o playit mostra para o túnel de Minecraft Java, como nome.gl.joinmc.link. É o que os amigos digitam no jogo. Se ainda não criou o túnel, deixe em branco: salve a chave, hosteie uma vez para o playit reconhecer o agente, crie o túnel no site e volte aqui."/>
+    <TextBox Name="AddressBox" Background="#0D1117" Foreground="#E6EDF3" CaretBrush="#E6EDF3" BorderBrush="#30363D" Padding="10,8" Margin="0,5,0,8"/>
+    <TextBlock TextWrapping="Wrap" Foreground="#D29922" FontSize="12.5" Margin="0,0,0,18"
+               Text="Com o túnel, o servidor fica alcançável pela internet. Mantenha ligada a opção &quot;Só entra quem está na whitelist&quot;."/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button Name="OffBtn" Content="Desligar o túnel" Padding="16,9" Margin="0,0,10,0" Visibility="Collapsed"/>
+      <Button Name="CancelBtn" Content="Cancelar" Padding="16,9" Margin="0,0,10,0" IsCancel="True"/>
+      <Button Name="SaveBtn" Content="Salvar" Padding="22,9" IsDefault="True"/>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+    $dialog = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $dialogXaml))
+    $dialog.Owner = $Window
+    $dialog.Icon = $Window.Icon
+    $keyBox = $dialog.FindName('KeyBox')
+    $addressBox = $dialog.FindName('AddressBox')
+    $offBtn = $dialog.FindName('OffBtn')
+    $choice = @{ Action = $null }
+    if ($isOn) {
+        $offBtn.Visibility = 'Visible'
+        $dialog.FindName('KeepHint').Visibility = 'Visible'
+        $addressBox.Text = [string]$script:Status.tunelEndereco
+    }
+    $dialog.FindName('SaveBtn').Add_Click({ $choice.Action = 'save'; $dialog.DialogResult = $true }.GetNewClosure())
+    $offBtn.Add_Click({ $choice.Action = 'off'; $dialog.DialogResult = $true }.GetNewClosure())
+    if (-not $dialog.ShowDialog()) { return }
+
+    $key = ''
+    $address = ''
+    if ($choice.Action -eq 'save') {
+        $key = $keyBox.Password.Trim()
+        $address = $addressBox.Text.Trim() -replace '^\w+://', ''
+        if (-not $key -and $isOn) {
+            $key = 'manter'   # o host.ps1 mantem a chave ja gravada
+        } elseif ($key -notmatch '^[0-9a-fA-F]{32,}$') {
+            [Windows.MessageBox]::Show($Window, 'Cole a chave secreta do agente: uma sequência longa de números e letras de a até f.',
+                'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+            return
+        }
+        if ($address -and $address -notmatch '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(:\d{1,5})?$') {
+            [Windows.MessageBox]::Show($Window, 'O endereço do túnel deve ser como nome.gl.joinmc.link (com :porta no fim, se o playit mostrar uma).',
+                'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+            return
+        }
+    } else {
+        $answer = [Windows.MessageBox]::Show($Window, 'Desligar o túnel? O grupo volta a se conectar pelo Radmin.',
+            'Minecraft Compartilhado', 'YesNo', 'Question')
+        if ($answer -ne 'Yes') { return }
+    }
+    Start-Maintenance 'Configurando a conexão por túnel...' 'Gravando a configuração para o grupo todo.' '-SetTunnel'
+    # a chave vai pela entrada do processo, nunca pela linha de comando
+    Send-ToHost $key
+    Send-ToHost $address
+}
+
 # Texto de um save na lista: "13/11/2026 18:27   Mundo salvo por Fulano"
 function Format-Save($save) {
     $text = $save.texto -replace '\s*\(\d{4}-\d\d-\d\d \d\d:\d\d\)$', ''
@@ -707,6 +784,7 @@ $OptionsBtn.Add_Click({
     $menu.IsOpen = $true
 })
 $MenuDiscord.Add_Click({ if (Test-CanMaintain) { Show-DiscordDialog } })
+$MenuTunnel.Add_Click({ if (Test-CanMaintain) { Show-TunnelDialog } })
 $MenuRestore.Add_Click({
     if (Test-CanMaintain) { $script:AfterSaves = 'restore'; $script:Saves = $null; Start-HostScript 'saves' '-ListSaves' }
 })

@@ -15,7 +15,9 @@ param(
                         # ("ask" pergunta no console; "off" desliga os avisos)
     [switch]$ListSaves, # lista os saves guardados no historico
     [string]$Restore,   # volta o mundo para o save indicado (hash do commit)
-    [int]$Prune         # compacta o historico, mantendo so os ultimos N saves
+    [int]$Prune,        # compacta o historico, mantendo so os ultimos N saves
+    [switch]$SetTunnel  # grava a chave e o endereco do tunel (playit.gg) no config.json e sai;
+                        # le duas linhas da entrada: a chave e o endereco (chave vazia = desliga)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -179,6 +181,120 @@ function Get-RadminIp {
         Select-Object -First 1
     if ($addr) { return $addr.IPAddress }
     return $null
+}
+
+# Endereco que os amigos usam para entrar: o do tunel, se estiver ligado, ou
+# o IP do Radmin deste PC. Vazio quando nao da para saber.
+function Get-JoinAddress {
+    if ($TunnelKey) { return $TunnelAddress }
+    $ip = Get-RadminIp
+    if ($ip) { return "${ip}:$(Get-ServerPort)" }
+    return ''
+}
+
+# ---- tunel (playit.gg)
+#
+# O agente oficial do playit roda no Windows em modo portatil: um .exe que fica
+# aberto enquanto o servidor esta no ar e le a chave do arquivo abaixo, na
+# pasta do usuario. Nada e instalado no PC.
+$PlayitSecretPath = Join-Path $env:LOCALAPPDATA 'playit_gg\playit.toml'
+$PlayitSecretBackup = "$PlayitSecretPath.antes-do-minecraft-compartilhado"
+
+# Baixa (uma vez) o agente oficial, da pagina de releases do playit no GitHub,
+# e confere a assinatura digital do arquivo.
+function Get-PlayitAgent {
+    $folder = Join-Path $RuntimeDir 'playit'
+    $exe = Join-Path $folder "playit-$PlayitVersion.exe"
+    if (-not (Test-Path $exe)) {
+        Say "Baixando o agente do tunel (playit $PlayitVersion, so na primeira vez)..."
+        New-Item -ItemType Directory -Force $folder | Out-Null
+        $arch = 'x86_64'
+        if (-not [Environment]::Is64BitOperatingSystem) { $arch = 'x86' }
+        $url = "https://github.com/playit-cloud/playit-agent/releases/download/v$PlayitVersion/playit-windows-$arch-signed.exe"
+        $partial = "$exe.baixando"
+        Invoke-WebRequest -Uri $url -OutFile $partial -UseBasicParsing -UserAgent $UserAgent
+        $signature = Get-AuthenticodeSignature $partial
+        if ($signature.Status -ne 'Valid') {
+            Remove-Item $partial -Force
+            throw "O agente do tunel baixado nao tem assinatura digital valida ($($signature.Status)). Nao vou usa-lo."
+        }
+        Move-Item $partial $exe -Force
+        Get-ChildItem $folder -Filter 'playit-*.exe' | Where-Object { $_.FullName -ne $exe } | Remove-Item -Force
+    }
+    return $exe
+}
+
+# Sobe o tunel. Devolve o processo do agente, ou $null se nao deu (o servidor
+# continua abrindo; so nao fica acessivel de fora).
+function Start-Tunnel {
+    try {
+        $exe = Get-PlayitAgent
+        # A chave do grupo vai para o arquivo que o agente le. Se a pessoa ja usa
+        # o playit por conta propria, a chave dela e guardada e devolvida no fim.
+        New-Item -ItemType Directory -Force (Split-Path $PlayitSecretPath) | Out-Null
+        if (Test-Path $PlayitSecretPath) {
+            $current = (Get-Content $PlayitSecretPath -Raw)
+            if ($current -notmatch [regex]::Escape($TunnelKey) -and -not (Test-Path $PlayitSecretBackup)) {
+                Move-Item $PlayitSecretPath $PlayitSecretBackup -Force
+            }
+        }
+        [IO.File]::WriteAllText($PlayitSecretPath, "secret_key = `"$TunnelKey`"`n")
+
+        # O agente roda por tras de um cmd que grava a saida dele num arquivo:
+        # e nessa saida que ele diz se a chave foi aceita.
+        $log = Join-Path (Split-Path $exe) 'agente.log'
+        Remove-Item $log -Force -ErrorAction SilentlyContinue
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "$env:SystemRoot\System32\cmd.exe"
+        $psi.Arguments = "/d /c `"`"$exe`" --stdout > `"$log`" 2>&1 < NUL`""
+        $psi.WorkingDirectory = Split-Path $exe
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true    # entrada propria: nao pode herdar a deste script
+        $agent = [System.Diagnostics.Process]::Start($psi)
+
+        # da uns segundos para o agente falar com o playit e ve o que ele respondeu
+        $verdict = 'ok'
+        for ($i = 0; $i -lt 16; $i++) {
+            Start-Sleep -Milliseconds 500
+            if ($agent.HasExited) { $verdict = 'fechou'; break }
+            if ((Test-Path $log) -and (Test-LogContains $log 0 'InvalidAgentKey')) { $verdict = 'chave'; break }
+        }
+        if ($verdict -eq 'chave') {
+            Stop-Tunnel $agent
+            Out-Line '    O playit recusou a chave do tunel (ela foi apagada ou trocada no site).' 'Red'
+            Out-Line '    Cole a chave nova em Opcoes > Conexao por tunel. O servidor vai abrir, mas quem esta fora nao consegue entrar.' 'Red'
+            return $null
+        }
+        if ($verdict -eq 'fechou') {
+            Stop-Tunnel $null
+            Out-Line '    O agente do tunel fechou logo ao abrir. O servidor vai abrir, mas quem esta fora nao consegue entrar.' 'Red'
+            Out-Line "    Detalhes em $log. Se o playit ja estiver aberto neste PC, feche-o antes." 'Red'
+            return $null
+        }
+        Out-Line '    Agente do tunel (playit.gg) iniciado.' 'Green'
+        return $agent
+    } catch {
+        Stop-Tunnel $null
+        Out-Line "    Nao consegui subir o tunel: $_" 'Red'
+        Out-Line '    O servidor vai abrir, mas quem esta fora nao consegue entrar.' 'Red'
+        return $null
+    }
+}
+
+# Encerra o agente e tira a chave do grupo da pasta do usuario.
+function Stop-Tunnel($agent) {
+    try {
+        if ($agent -and -not $agent.HasExited) {
+            # /T: encerra o cmd e o agente que ele abriu
+            @() | & taskkill /PID $agent.Id /T /F > $null 2> $null
+            $agent.WaitForExit(5000) | Out-Null
+        }
+    } catch { }
+    try {
+        if (Test-Path $PlayitSecretPath) { Remove-Item $PlayitSecretPath -Force }
+        if (Test-Path $PlayitSecretBackup) { Move-Item $PlayitSecretBackup $PlayitSecretPath -Force }
+    } catch { }
 }
 
 function Get-ServerPort {
@@ -453,6 +569,12 @@ if (-not (Test-Git remote get-url origin)) {
 
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $WebhookUrl = [string]$Config.discordWebhook   # vazio = sem avisos no Discord
+# Tunel do playit.gg: com a chave preenchida, quem hosteia sobe um tunel e os
+# outros entram pelo endereco publico dele, sem VPN. Vazio = usa o Radmin.
+$TunnelKey     = ([string]$Config.tunelChave).Trim()
+$TunnelAddress = ([string]$Config.tunelEndereco).Trim()
+$PlayitVersion = '2.0.2'   # versao do agente oficial baixada do GitHub do playit
+if ($Config.playitVersao) { $PlayitVersion = [string]$Config.playitVersao }
 $BackupMinutes = 20   # intervalo do backup automatico; 0 desliga
 if ($null -ne $Config.backupMinutos) { $BackupMinutes = [double]$Config.backupMinutos }
 $Branch = (Invoke-Git rev-parse --abbrev-ref HEAD)
@@ -513,6 +635,8 @@ if ($Status) {
             semSinal    = [bool](Test-SignalStale $remoteLock)
             backupMin   = $BackupMinutes
             discord     = [bool]$WebhookUrl
+            tunel       = [bool]$TunnelKey
+            tunelEndereco = $TunnelAddress
         }
         Emit ('STATUS@@' + ($info | ConvertTo-Json -Compress))
         exit 0
@@ -574,6 +698,58 @@ if ($PSBoundParameters.ContainsKey('SetWebhook')) {
         Say 'Avisos no Discord ligados para o grupo todo.' 'Green'
     } else {
         Say 'Avisos no Discord desligados.' 'Green'
+    }
+    exit 0
+}
+
+# ---------------------------------------------------------------- tunel
+
+if ($SetTunnel) {
+    # A chave nunca passa pela linha de comando nem aparece na tela: vem pela entrada.
+    if ($Gui) {
+        $key = ([string][Console]::In.ReadLine()).Trim()
+        $address = ([string][Console]::In.ReadLine()).Trim()
+    } else {
+        Write-Host ''
+        Write-Host 'Tunel do playit.gg. Deixe a chave vazia para desligar e voltar ao Radmin.'
+        $secure = Read-Host 'Chave secreta do agente (nao aparece enquanto voce digita)' -AsSecureString
+        $key = ([Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))).Trim()
+        $address = ''
+        if ($key) { $address = (Read-Host 'Endereco publico do tunel (ex.: nome.gl.joinmc.link)').Trim() }
+    }
+    if ($key -eq 'manter') { $key = $TunnelKey }   # so troca o endereco, sem redigitar a chave
+    if (-not $key) { $address = '' }
+    if ($key -and $key -notmatch '^[0-9a-fA-F]{32,}$') {
+        Fail 'Isso nao parece a chave secreta do playit (ela e uma sequencia longa de letras de a ate f e numeros).'
+    }
+    # o endereco pode ficar para depois: o playit so deixa criar o tunel (e mostra
+    # o endereco) depois que o agente se conecta pela primeira vez
+    if ($key -and $address -and $address -notmatch '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(:\d{1,5})?$') {
+        Fail 'O endereco do tunel deve ser como nome.gl.joinmc.link (com :porta no fim, se o playit mostrar uma).'
+    }
+    Assert-ServerIdle 'mudar a configuracao'
+
+    $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json   # relido apos o merge
+    $Config | Add-Member -NotePropertyName tunelChave -NotePropertyValue $key -Force
+    $Config | Add-Member -NotePropertyName tunelEndereco -NotePropertyValue $address -Force
+    [IO.File]::WriteAllText($ConfigPath, ($Config | ConvertTo-Json) + "`n")
+    Invoke-Git add $ConfigPath
+    if (Test-Git diff --cached --quiet) {
+        Say 'A configuracao ja estava assim. Nada mudou.' 'Green'
+        exit 0
+    }
+    if ($key) { $what = 'Liga' } else { $what = 'Desliga' }
+    Invoke-Git commit --quiet -m "$what o tunel do playit.gg ($Me)"
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --hard --quiet 'HEAD~1'
+        Fail 'Nao consegui enviar a configuracao para o GitHub. Nada foi alterado.'
+    }
+    if ($key -and $address) {
+        Say "Tunel ligado para o grupo todo. Endereco para entrar: $address" 'Green'
+    } elseif ($key) {
+        Say 'Chave do tunel gravada. Falta o endereco: hosteie uma vez, crie o tunel no site do playit e volte aqui para preencher.' 'Green'
+    } else {
+        Say 'Tunel desligado. O grupo volta a usar o Radmin.' 'Green'
     }
     exit 0
 }
@@ -767,9 +943,8 @@ if (-not $resume) {
 
     # Pega a trava. O push e o que decide: se duas pessoas tentarem ao mesmo
     # tempo, o GitHub aceita so o primeiro.
-    $ip = Get-RadminIp
-    $address = $null
-    if ($ip) { $address = "${ip}:$(Get-ServerPort)" }
+    $address = Get-JoinAddress
+    if (-not $address) { $address = $null }
     Write-Lock (Get-Date -Format 'yyyy-MM-dd HH:mm') $address
     Invoke-Git add $LockName
     Invoke-Git commit --quiet -m "$Me comecou a hostear"
@@ -801,6 +976,7 @@ if (-not $resume) {
 # ---------------------------------------------------------------- servidor
 
 $server = $null
+$tunnel = $null
 $announcedOpen = $false
 try {
     New-Item -ItemType Directory -Force $ServerDir | Out-Null
@@ -811,11 +987,24 @@ try {
         $jar  = Get-PaperJar $Config.versaoMinecraft
 
         Say 'Servidor iniciando!' 'Green'
-        $ip = Get-RadminIp
-        if ($ip) {
-            Write-Host "    Seus amigos entram em: ${ip}:$(Get-ServerPort)" -ForegroundColor Green
+        if ($TunnelKey) { $tunnel = Start-Tunnel }
+        $shown = Get-JoinAddress
+        if ($TunnelKey -and -not $tunnel) {
+            # o tunel nao subiu; o aviso em vermelho acima ja explicou
+        } elseif ($shown) {
+            Write-Host "    Seus amigos entram em: $shown" -ForegroundColor Green
+        } elseif ($TunnelKey) {
+            Write-Host '    O tunel esta ligado, mas falta o endereco dele. Crie o tunel de Minecraft Java no site do playit' -ForegroundColor Yellow
+            Write-Host '    e, depois de fechar o servidor, preencha o endereco em Opcoes > Conexao por tunel.' -ForegroundColor Yellow
         } else {
             Write-Host '    Radmin VPN nao encontrado neste PC. Abra o Radmin e entre na rede do grupo.' -ForegroundColor Yellow
+        }
+        if ($TunnelKey) {
+            $props = Join-Path $ServerDir 'server.properties'
+            if ((Test-Path $props) -and (@(Get-Content $props) -match '^white-list=false')) {
+                Write-Host '    ATENCAO: com o tunel o servidor fica aberto para a internet e a whitelist esta desligada.' -ForegroundColor Yellow
+                Write-Host '    Ligue "So entra quem esta na whitelist" para so o seu grupo conseguir entrar.' -ForegroundColor Yellow
+            }
         }
         Write-Host '    Para fechar e salvar: digite  stop  e aperte Enter. NAO feche a janela no X.'
         Write-Host ''
@@ -824,8 +1013,6 @@ try {
         # quem entrega os comandos a ele e este script (ver o laco abaixo).
         $javaArgs = "-Xms$($Config.memoria) -Xmx$($Config.memoria) -Dterminal.jline=false -jar `"$jar`" nogui"
         if ($Gui) { $javaArgs = "-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 $javaArgs" }
-        $shown = ''
-        if ($ip) { $shown = "${ip}:$(Get-ServerPort)" }
         Emit "STATE@@running@@$shown"
         # A entrada do servidor passa por este script: assim ele repassa o que
         # voce digita (ou o que a interface manda) e tambem consegue mandar os
@@ -909,6 +1096,7 @@ finally {
         $server.WaitForExit(120000) | Out-Null
     }
     Remove-Item $PidPath -Force -ErrorAction SilentlyContinue
+    if ($TunnelKey) { Stop-Tunnel $tunnel }
     $closedMessage = $null
     if ($announcedOpen) {
         $closedMessage = "$IconClosed **$Me** fechou o servidor. Mundo salvo; quem quiser j$([char]0xE1) pode hostear."
