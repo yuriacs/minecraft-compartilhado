@@ -12,7 +12,6 @@
   #define AppVersion "0.0.0"
 #endif
 #define PowerShell "{win}\System32\WindowsPowerShell\v1.0\powershell.exe"
-#define LauncherArgs "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""
 
 [Setup]
 AppId={{6B2E4F0A-3C1D-4E7B-9A52-7D0C8F1E2B43}
@@ -47,11 +46,11 @@ Source: "app.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "{#LauncherArgs}"; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "Hostear ou entrar no servidor de Minecraft do grupo"
-Name: "{autodesktop}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "{#LauncherArgs}"; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "Hostear ou entrar no servidor de Minecraft do grupo"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "Hostear ou entrar no servidor de Minecraft do grupo"
+Name: "{autodesktop}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "Hostear ou entrar no servidor de Minecraft do grupo"; Tasks: desktopicon
 
 [Run]
-Filename: "{#PowerShell}"; Parameters: "{#LauncherArgs}"; WorkingDir: "{app}"; Description: "Abrir o {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; Description: "Abrir o {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [Messages]
 ptbr.FinishedLabel=O [name] foi instalado. Na primeira vez que abrir, ele pede o link do seu grupo e baixa o servidor.
