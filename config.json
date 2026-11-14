@@ -2,5 +2,6 @@
   "versaoMinecraft": "26.3",
   "javaVersao": 25,
   "memoria": "4G",
-  "backupMinutos": 20
+  "backupMinutos": 20,
+  "discordWebhook": ""
 }

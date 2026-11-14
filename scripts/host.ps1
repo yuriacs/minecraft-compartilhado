@@ -10,7 +10,9 @@ param(
     [switch]$SaveOnly,  # so envia o que ficou pendente (sessao que fechou errado)
     [switch]$Status,    # so mostra quem esta hosteando
     [switch]$Gui,       # chamado pela interface (scripts\gui.ps1): sem perguntas no console
-    [int]$ParentPid     # PID da interface; se ela morrer, o servidor e encerrado
+    [int]$ParentPid,    # PID da interface; se ela morrer, o servidor e encerrado
+    [string]$SetWebhook # grava o link do webhook do Discord no config.json e sai
+                        # ("ask" pergunta no console; "off" desliga os avisos)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,6 +51,26 @@ function Fail($msg) {
 # Linhas "@@..." sao lidas pela interface e nao aparecem para o usuario.
 function Emit($text) {
     if ($Gui) { Out-Line "@@$text" }
+}
+
+# Icones das mensagens do Discord (escritos por codigo para manter o arquivo em ASCII).
+$IconOpen   = [char]::ConvertFromUtf32(0x1F7E2)   # circulo verde
+$IconClosed = [char]::ConvertFromUtf32(0x1F534)   # circulo vermelho
+$IconWarn   = [string][char]0x26A0                # aviso
+$IconSwap   = [char]::ConvertFromUtf32(0x1F501)   # setas em ciclo
+
+# Manda um aviso para o canal do Discord do grupo, se houver webhook no
+# config.json. Nunca atrapalha o servidor: qualquer erro aqui e ignorado.
+# Devolve se o Discord aceitou a mensagem.
+function Send-Discord($text, $url = $WebhookUrl) {
+    if (-not $url) { return $false }
+    try {
+        # allowed_mentions vazio: um nick tipo "@everyone" nao marca ninguem
+        $payload = @{ content = $text; allowed_mentions = @{ parse = @() } } | ConvertTo-Json -Compress -Depth 4
+        $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+        Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec 10 -UserAgent $UserAgent | Out-Null
+        return $true
+    } catch { return $false }
 }
 
 # No console pergunta com Read-Host; na interface manda o codigo da pergunta
@@ -189,8 +211,9 @@ function Push-WithRetry {
     return $false
 }
 
-# Tira a trava, commita o mundo e envia.
-function Save-AndRelease {
+# Tira a trava, commita o mundo e envia. $closedMessage, se houver, e o aviso
+# que vai para o Discord quando o envio da certo.
+function Save-AndRelease($closedMessage) {
     Emit 'STATE@@saving'
     Say 'Salvando o mundo no GitHub...'
     if (Test-Path $LockPath) { Remove-Item $LockPath -Force }
@@ -201,7 +224,11 @@ function Save-AndRelease {
     }
     if (Push-WithRetry) {
         Say 'Mundo salvo e trava liberada. Outra pessoa ja pode hostear.' 'Green'
+        if ($closedMessage) { Send-Discord $closedMessage | Out-Null }
     } else {
+        if ($closedMessage) {
+            Send-Discord "$IconWarn **$Me** fechou o servidor, mas o mundo ainda n$([char]0xE3)o foi enviado ao GitHub. N$([char]0xE3)o assumam o servidor at$([char]0xE9) isso ser resolvido." | Out-Null
+        }
         Write-Host ''
         Write-Host '!!! O MUNDO NAO FOI ENVIADO PARA O GITHUB !!!' -ForegroundColor Red
         Write-Host 'Seu progresso esta salvo so neste PC e a trava continua no seu nome.' -ForegroundColor Red
@@ -363,6 +390,7 @@ if (-not (Test-Git remote get-url origin)) {
 }
 
 $Config = Get-Content (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json
+$WebhookUrl = [string]$Config.discordWebhook   # vazio = sem avisos no Discord
 $BackupMinutes = 20   # intervalo do backup automatico; 0 desliga
 if ($null -ne $Config.backupMinutos) { $BackupMinutes = [double]$Config.backupMinutos }
 $Branch = (Invoke-Git rev-parse --abbrev-ref HEAD)
@@ -398,6 +426,7 @@ if ($Status) {
             semSinalMin = (Get-SignalAge $remoteLock)
             semSinal    = [bool](Test-SignalStale $remoteLock)
             backupMin   = $BackupMinutes
+            discord     = [bool]$WebhookUrl
         }
         Emit ('STATUS@@' + ($info | ConvertTo-Json -Compress))
         exit 0
@@ -411,18 +440,76 @@ if ($Status) {
     exit 0
 }
 
-# ---------------------------------------------------------------- so salvar
+# ---------------------------------------------------------------- outra janela
 
 if (Test-LocalSession) {
     Fail 'O servidor ja esta aberto em outra janela neste PC. Feche por la (stop) antes.'
 }
+
+# ---------------------------------------------------------------- discord
+
+if ($PSBoundParameters.ContainsKey('SetWebhook')) {
+    $url = $SetWebhook.Trim()
+    if ($url -eq 'ask') {
+        Write-Host ''
+        Write-Host 'No Discord: Editar canal > Integracoes > Webhooks > Novo webhook > Copiar URL do webhook.'
+        $url = (Read-Host 'Cole o link do webhook (ou deixe vazio para desligar os avisos)').Trim()
+    }
+    if ($url -eq 'off') { $url = '' }
+    if ($url -and $url -notmatch '^https://([a-z]+\.)?discord(app)?\.com/api/webhooks/\d+/[\w-]+$') {
+        Fail 'Isso nao parece um link de webhook do Discord. Ele comeca com https://discord.com/api/webhooks/'
+    }
+
+    # A configuracao vai num commit proprio. Com o servidor aberto esse commit
+    # atropelaria os backups do host, entao so e permitido com ele fechado.
+    if (Get-RemoteLock) { Fail 'O servidor esta aberto. Espere fechar para mudar a configuracao.' }
+    $ahead = 0
+    if ($HasRemoteBranch) { $ahead = [int](Invoke-Git rev-list --count "origin/$Branch..HEAD") }
+    if ((Read-Lock) -or $ahead -gt 0 -or (@() | & git -C $Root status --porcelain)) {
+        Fail 'Este PC tem uma sessao ou alteracoes que ainda nao foram enviadas. Resolva isso primeiro (Enviar mundo agora / salvar.bat).'
+    }
+    if ($HasRemoteBranch -and -not (Test-Git merge --ff-only "origin/$Branch")) {
+        Fail 'Seu repositorio local divergiu do GitHub.'
+    }
+
+    if ($url) {
+        Say 'Mandando uma mensagem de teste para o Discord...'
+        $hello = "$IconOpen Avisos do **Minecraft Compartilhado** ligados por **$Me**. Este canal vai avisar quando o servidor abrir e fechar."
+        if (-not (Send-Discord $hello $url)) {
+            Fail 'O Discord nao aceitou esse link. Confira se copiou o webhook inteiro e se ele ainda existe.'
+        }
+    }
+
+    $Config = Get-Content (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json   # relido apos o merge
+    $Config | Add-Member -NotePropertyName discordWebhook -NotePropertyValue $url -Force
+    [IO.File]::WriteAllText((Join-Path $Root 'config.json'), ($Config | ConvertTo-Json) + "`n")
+    Invoke-Git add config.json
+    if (Test-Git diff --cached --quiet) {
+        Say 'A configuracao ja estava assim. Nada mudou.' 'Green'
+        exit 0
+    }
+    if ($url) { $what = 'Liga' } else { $what = 'Desliga' }
+    Invoke-Git commit --quiet -m "$what os avisos no Discord ($Me)"
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --hard --quiet 'HEAD~1'
+        Fail 'Nao consegui enviar a configuracao para o GitHub. Nada foi alterado.'
+    }
+    if ($url) {
+        Say 'Avisos no Discord ligados para o grupo todo.' 'Green'
+    } else {
+        Say 'Avisos no Discord desligados.' 'Green'
+    }
+    exit 0
+}
+
+# ---------------------------------------------------------------- so salvar
 
 if ($SaveOnly) {
     $lock = Read-Lock
     $ahead = 0
     if ($HasRemoteBranch) { $ahead = [int](Invoke-Git rev-list --count "origin/$Branch..HEAD") }
     if ($lock -and $lock.host -eq $Me) {
-        Save-AndRelease
+        Save-AndRelease "$IconClosed **$Me** enviou o mundo da sess$([char]0xE3)o que tinha ficado pendente. Servidor livre para hostear."
     } elseif ($ahead -gt 0) {
         Say 'Enviando o que ficou pendente...'
         if (Push-WithRetry) { Say 'Enviado.' 'Green' } else { Fail 'O envio falhou de novo. Confira a internet e o login do GitHub.' }
@@ -436,6 +523,7 @@ if ($SaveOnly) {
 
 $lock = Read-Lock
 $resume = $false
+$tookOverFrom = $null
 
 if ($lock -and $lock.host -eq $Me) {
     # Minha ultima sessao nao fechou direito (janela fechada, PC desligou...).
@@ -488,6 +576,7 @@ if (-not $resume) {
         Write-Host ''
         Write-Host "    Assumir vai usar o ultimo backup. O que $($lock.host) jogou depois dele sera perdido." -ForegroundColor Red
         if (-not (Confirm-Yes '    Assumir mesmo assim?' "assumir@@$($lock.host)")) { exit 1 }
+        $tookOverFrom = $lock.host
     }
 
     # Pega a trava. O push e o que decide: se duas pessoas tentarem ao mesmo
@@ -518,11 +607,15 @@ if (-not $resume) {
         Invoke-Git reset --hard --quiet 'HEAD~1'
         Fail 'Nao consegui enviar para o GitHub. Confira a internet, o login e se voce tem permissao de escrita no repositorio.'
     }
+    if ($tookOverFrom) {
+        Send-Discord "$IconSwap **$Me** assumiu o servidor que estava com **$tookOverFrom**, a partir do $([char]0xFA)ltimo backup." | Out-Null
+    }
 }
 
 # ---------------------------------------------------------------- servidor
 
 $server = $null
+$announcedOpen = $false
 try {
     New-Item -ItemType Directory -Force $ServerDir | Out-Null
     New-Item -ItemType Directory -Force $RuntimeDir | Out-Null
@@ -577,6 +670,13 @@ try {
             if (-not $ready -and ($ticks % 4 -eq 0) -and (Test-ServerReady $logPath $server.StartTime)) {
                 $ready = $true
                 $nextBackup = (Get-Date).AddMinutes($BackupMinutes)
+                if ($shown) {
+                    $where = "Entrem por: ``$shown``"
+                } else {
+                    $where = "Pe$([char]0xE7)am o endere$([char]0xE7)o para **$Me**."
+                }
+                Send-Discord "$IconOpen **$Me** abriu o servidor de Minecraft! $where" | Out-Null
+                $announcedOpen = $true
             }
 
             # recolhe as linhas ja digitadas (ou mandadas pela interface)
@@ -623,5 +723,9 @@ finally {
         $server.WaitForExit(120000) | Out-Null
     }
     Remove-Item $PidPath -Force -ErrorAction SilentlyContinue
-    Save-AndRelease
+    $closedMessage = $null
+    if ($announcedOpen) {
+        $closedMessage = "$IconClosed **$Me** fechou o servidor. Mundo salvo; quem quiser j$([char]0xE1) pode hostear."
+    }
+    Save-AndRelease $closedMessage
 }

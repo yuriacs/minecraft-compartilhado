@@ -90,6 +90,7 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
       <Button x:Name="PrimaryBtn" Style="{StaticResource Btn}" DockPanel.Dock="Left"/>
       <Button x:Name="SecondaryBtn" Style="{StaticResource Btn}" DockPanel.Dock="Left"/>
       <Button x:Name="RefreshBtn" Style="{StaticResource Btn}" Content="Atualizar" DockPanel.Dock="Right" Margin="0"/>
+      <Button x:Name="DiscordBtn" Style="{StaticResource Btn}" Content="Avisos no Discord" DockPanel.Dock="Right"/>
     </DockPanel>
 
     <!-- console -->
@@ -115,14 +116,14 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
 
 $Window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $Xaml))
 foreach ($name in 'Dot', 'StatusTitle', 'StatusDetail', 'AddressRow', 'AddressText', 'CopyBtn',
-                  'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'LogBox', 'CommandBox', 'SendBtn') {
+                  'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'DiscordBtn', 'LogBox', 'CommandBox', 'SendBtn') {
     Set-Variable -Name $name -Value $Window.FindName($name) -Scope Script
 }
 
 # ---------------------------------------------------------------- estado
 
 $script:Proc           = $null   # processo do host.ps1 em andamento (um por vez)
-$script:Kind           = $null   # 'status' | 'host' | 'save'
+$script:Kind           = $null   # 'status' | 'host' | 'save' | 'config'
 $script:Phase          = $null   # do host: 'sync' | 'running' | 'ready' | 'saving'
 $script:OutTask        = $null
 $script:ErrTask        = $null
@@ -202,6 +203,11 @@ function Update-Ui {
         $detail = 'Não feche esta janela até terminar.'
         $primaryText = 'Enviando...'; $primaryEnabled = $false
     }
+    elseif ($busy -and $script:Kind -eq 'config') {
+        $dot = 'yellow'; $title = 'Configurando os avisos do Discord...'
+        $detail = 'Testando o link e gravando a configuração para o grupo todo.'
+        $primaryText = 'Aguarde...'; $primaryEnabled = $false
+    }
     elseif (-not $st) {
         if ($busy) {
             $title = 'Verificando o servidor...'; $detail = 'Consultando o GitHub.'
@@ -268,6 +274,9 @@ function Update-Ui {
     Set-Button $script:SecondaryBtn $secondaryText '#30363D' (-not $busy)
 
     $script:RefreshBtn.IsEnabled = -not $busy
+    # a configuracao do Discord vale para o grupo e so pode mudar com o servidor fechado
+    $script:DiscordBtn.IsEnabled = (-not $busy) -and $st -and (-not $st.trava) -and (-not $st.pendente) -and (-not $st.rodandoAqui)
+    $script:DiscordBtn.Content = if ($st -and $st.discord) { 'Avisos no Discord: ligados' } else { 'Ligar avisos no Discord' }
     $serverUp = $busy -and $script:Kind -eq 'host' -and $script:Phase -in 'running', 'ready' -and -not $script:Stopping
     $script:CommandBox.IsEnabled = $serverUp
     $script:SendBtn.IsEnabled = $serverUp
@@ -461,6 +470,28 @@ $PrimaryBtn.Add_Click({ Invoke-Action $script:PrimaryAction })
 $SecondaryBtn.Add_Click({ Invoke-Action $script:SecondaryAction })
 $RefreshBtn.Add_Click({ Start-HostScript 'status' '-Status' })
 $SendBtn.Add_Click({ Send-Command })
+$DiscordBtn.Add_Click({
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $prompt = "Cole aqui o link do webhook do canal onde os avisos devem aparecer.`n`n" +
+              "No Discord: Editar canal > Integrações > Webhooks > Novo webhook > Copiar URL do webhook.`n`n" +
+              'Para desligar os avisos, deixe em branco.'
+    $url = [Microsoft.VisualBasic.Interaction]::InputBox($prompt, 'Avisos no Discord', '').Trim()
+    if (-not $url) {
+        # em branco tambem e o que o botao Cancelar devolve: so desliga se confirmar
+        if (-not ($script:Status -and $script:Status.discord)) { return }
+        $answer = [Windows.MessageBox]::Show($Window, 'Desligar os avisos no Discord para o grupo todo?',
+            'Minecraft Compartilhado', 'YesNo', 'Question')
+        if ($answer -ne 'Yes') { return }
+        $url = 'off'
+    }
+    if ($url -match '[\s"]') {
+        [Windows.MessageBox]::Show($Window, 'Esse link tem espaços ou aspas. Copie de novo a URL do webhook.',
+            'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $script:LogBox.Clear()
+    Start-HostScript 'config' "-SetWebhook `"$url`""
+})
 $CommandBox.Add_KeyDown({ if ($_.Key -eq 'Return') { Send-Command } })
 $CopyBtn.Add_Click({
     [Windows.Clipboard]::SetText($script:AddressText.Text)

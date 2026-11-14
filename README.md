@@ -8,6 +8,7 @@ O mundo fica guardado num repositório privado do GitHub. Qualquer pessoa do gru
 - Backup automático a cada 20 minutos enquanto o servidor está aberto.
 - Se o PC do host cair, outra pessoa assume a partir do último backup.
 - Interface com um botão para hostear e outro para parar e salvar. Java e Paper são baixados sozinhos.
+- Instalador de um arquivo só para os amigos, e avisos no Discord quando o servidor abre e fecha.
 
 Funciona em **Windows**. Quem só vai jogar precisa apenas do Minecraft Java original.
 
@@ -22,20 +23,21 @@ Não dá para hostear clonando este repositório diretamente, porque ninguém al
 1. Entre na sua conta do GitHub e clique em **Use this template → Create a new repository**, no topo desta página.
 2. Escolha um nome e marque **Private**. O repositório vai guardar o mundo, os nicks dos jogadores e o endereço de quem hosteia, então não deixe público.
 3. No repositório novo, vá em **Settings → Collaborators** e adicione os amigos que vão poder hostear.
-4. Siga os passos de "Para hostear" abaixo. Na primeira vez o mundo é gerado; feche com **Parar e salvar** para ele subir ao GitHub.
+4. Abra o arquivo `Instalar Minecraft Compartilhado.bat` do seu repositório no Bloco de Notas e preencha a linha `set "REPO_URL="` com o link do seu repositório, por exemplo `set "REPO_URL=https://github.com/SEU-USUARIO/SEU-REPOSITORIO.git"`. Salve, faça commit e guarde uma cópia: é esse arquivo que você manda para os amigos.
+5. Rode o instalador no seu próprio PC e siga os passos de "Para hostear" abaixo. Na primeira vez o mundo é gerado; feche com **Parar e salvar** para ele subir ao GitHub.
 
 ## Para hostear
 
-Cada pessoa que for hostear precisa de uma conta no GitHub com acesso ao repositório do grupo e do [Git](https://git-scm.com/download/win) instalado.
+Cada pessoa que for hostear precisa de uma conta no GitHub convidada como colaboradora do repositório do grupo, com o convite já aceito.
 
-1. Clone o repositório **do seu grupo** (não baixe o ZIP) numa pasta fora do OneDrive/Google Drive, por exemplo `C:\minecraft-do-grupo`:
-   ```
-   git clone https://github.com/SEU-USUARIO/SEU-REPOSITORIO.git C:\minecraft-do-grupo
-   ```
-2. Dê dois cliques em `Minecraft Compartilhado.bat`. A janela mostra quem está hosteando.
-3. Clique em **Hostear servidor**. Na primeira vez ele baixa o Java e o Paper e pergunta se você aceita a [EULA do Minecraft](https://aka.ms/MinecraftEULA).
-4. Passe para os amigos o endereço que aparece (botão **Copiar endereço**). Você mesmo entra por `localhost`.
-5. Para fechar: clique em **Parar e salvar** e espere a mensagem de mundo salvo.
+**Instalação (uma vez):** dê dois cliques no `Instalar Minecraft Compartilhado.bat` que o dono do grupo mandou. Ele instala o Git se faltar, baixa o servidor para `C:\MinecraftCompartilhado`, pergunta seu nick e cria o atalho **Minecraft Compartilhado** na área de trabalho. Se o instalador vier sem o link do grupo preenchido, ele pede o link na hora. Se o Windows mostrar um aviso de segurança por ser um arquivo recebido de fora, escolha executar mesmo assim.
+
+Quem preferir fazer na mão: instale o [Git](https://git-scm.com/download/win), clone o repositório **do seu grupo** (não baixe o ZIP) numa pasta fora do OneDrive/Google Drive e use o `Minecraft Compartilhado.bat` no lugar do atalho.
+
+1. Abra o atalho **Minecraft Compartilhado**. A janela mostra quem está hosteando.
+2. Clique em **Hostear servidor**. Na primeira vez ele baixa o Java e o Paper e pergunta se você aceita a [EULA do Minecraft](https://aka.ms/MinecraftEULA).
+3. Passe para os amigos o endereço que aparece (botão **Copiar endereço**). Você mesmo entra por `localhost`.
+4. Para fechar: clique em **Parar e salvar** e espere a mensagem de mundo salvo.
 
 Na primeira vez o Windows pergunta se o Java pode usar a rede: permita, senão ninguém consegue entrar.
 
@@ -61,7 +63,19 @@ Quem tem o repositório clonado abre a interface (ou o `status.bat`) para ver qu
 | `iniciar.bat` | Baixa o mundo, reserva o servidor, inicia, e ao fechar salva e envia. Para fechar digite `stop`; **não feche no X**. |
 | `status.bat` | Mostra quem está hosteando, o endereço e há quanto tempo o host deu sinal. |
 | `salvar.bat` | Envia o que ficou pendente quando a sessão fechou errado (janela fechada no X, internet caiu no envio). |
+| `discord.bat` | Liga ou desliga os avisos no Discord (pede o link do webhook). |
 | `forcar.bat` | Assume o servidor mesmo com outra pessoa marcada como host. Só use se ela caiu e não vai voltar: o que ela jogou depois do último backup automático é perdido. |
+
+## Avisos no Discord
+
+O programa pode avisar num canal do Discord quando alguém abre o servidor (com o endereço), quando fecha e quando alguém assume o servidor de um host que caiu. Assim ninguém precisa abrir o programa para saber se dá para jogar.
+
+1. No Discord, no canal onde os avisos devem aparecer: **Editar canal → Integrações → Webhooks → Novo webhook → Copiar URL do webhook**.
+2. Na interface, com o servidor fechado, clique em **Ligar avisos no Discord** e cole o link. Chega uma mensagem de teste no canal.
+
+Vale para o grupo todo: o link fica no `config.json` do repositório. Para desligar, clique no mesmo botão e deixe o campo em branco. Pelo console, o equivalente é o `discord.bat`.
+
+Quem tem o link do webhook consegue postar no canal, então ele só deve ficar em repositório privado.
 
 ## Como funciona
 
@@ -73,7 +87,7 @@ Quem tem o repositório clonado abre a interface (ou o `status.bat`) para ver qu
 
 ## Configuração
 
-- `config.json`: versão do Minecraft (`versaoMinecraft`), versão do Java (`javaVersao`), memória do servidor (`memoria`, ex. `4G`) e intervalo do backup em minutos (`backupMinutos`; `0` desliga). Para atualizar o Minecraft, mude `versaoMinecraft`, confira no site do Paper qual Java a versão exige, e dê commit e push; o próximo host baixa o Paper novo.
+- `config.json`: versão do Minecraft (`versaoMinecraft`), versão do Java (`javaVersao`), memória do servidor (`memoria`, ex. `4G`), intervalo do backup em minutos (`backupMinutos`; `0` desliga) e o link dos avisos do Discord (`discordWebhook`, preenchido pelo botão da interface). Para atualizar o Minecraft, mude `versaoMinecraft`, confira no site do Paper qual Java a versão exige, e dê commit e push; o próximo host baixa o Paper novo.
 - `server/server.properties`, `ops.json`, `whitelist.json` e os plugins em `server/plugins/` são sincronizados junto com o mundo. Edite com o servidor fechado e deixe o programa enviar.
 - Servidores novos nascem com a whitelist ligada e vazia. Na primeira vez, digite `whitelist off` ou `whitelist add SeuNick` na caixa de comandos, senão ninguém entra.
 - Só entra quem tem Minecraft original, a não ser que você mude `online-mode` no `server.properties`.
