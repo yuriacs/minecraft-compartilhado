@@ -16,8 +16,13 @@ param(
     [switch]$ListSaves, # lista os saves guardados no historico
     [string]$Restore,   # volta o mundo para o save indicado (hash do commit)
     [int]$Prune,        # compacta o historico, mantendo so os ultimos N saves
-    [switch]$SetTunnel  # grava a chave e o endereco do tunel (playit.gg) no config.json e sai;
+    [switch]$SetTunnel, # grava a chave e o endereco do tunel (playit.gg) no config.json e sai;
                         # le duas linhas da entrada: a chave e o endereco (chave vazia = desliga)
+    [switch]$ListVersions,   # lista as versoes do Minecraft disponiveis
+    [string]$SetServer,      # troca o tipo e a versao do servidor: "paper|26.3" ou "fabric|26.3"
+    [string]$SaveChanges,    # envia o que mudou em server/ (plugins, mods), com esta mensagem
+    [switch]$SyncOnly,       # so traz o estado mais recente do GitHub para este PC
+    [switch]$UpdateProgram   # atualiza os scripts do programa para a ultima versao publicada
 )
 
 $ErrorActionPreference = 'Stop'
@@ -543,6 +548,79 @@ function Get-PaperJar($version) {
     return $download.name
 }
 
+# Le uma lista em JSON de uma API. O Invoke-RestMethod devolve a lista inteira
+# como um unico objeto; aqui ela vira uma lista normal, item por item.
+function Get-JsonList($uri) {
+    $response = Invoke-RestMethod -Uri $uri -UserAgent $UserAgent -TimeoutSec 20
+    return @($response | ForEach-Object { $_ })
+}
+
+# Devolve o nome do .jar do servidor Fabric para a versao pedida, baixando se
+# faltar. E o "server launcher" oficial do Fabric: um .jar unico que baixa o
+# servidor da Mojang e carrega os mods da pasta server\mods.
+function Get-FabricJar($version) {
+    $existing = Get-ChildItem $ServerDir -Filter "fabric-server-$version-*.jar" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($existing) { return $existing.Name }
+
+    Say "Baixando o servidor Fabric $version (so na primeira vez)..."
+    $meta = 'https://meta.fabricmc.net/v2/versions'
+    $loaders = @(Get-JsonList "$meta/loader/$version")
+    $loader = ($loaders | Where-Object { $_.loader.stable } | Select-Object -First 1).loader.version
+    if (-not $loader -and $loaders.Count -gt 0) { $loader = $loaders[0].loader.version }
+    if (-not $loader) { throw "O Fabric ainda nao tem versao para o Minecraft $version." }
+    $installer = (@(Get-JsonList "$meta/installer") | Where-Object { $_.stable } | Select-Object -First 1).version
+    if (-not $installer) { throw 'Nao consegui descobrir a versao do instalador do Fabric.' }
+
+    $name = "fabric-server-$version-$loader.jar"
+    $target = Join-Path $ServerDir $name
+    Invoke-WebRequest -Uri "$meta/loader/$version/$loader/$installer/server/jar" -OutFile "$target.baixando" -UseBasicParsing -UserAgent $UserAgent
+    if ((Get-Item "$target.baixando").Length -lt 10000) {
+        Remove-Item "$target.baixando" -Force
+        throw 'O download do servidor Fabric veio incompleto. Tente de novo.'
+    }
+    Move-Item "$target.baixando" $target -Force
+    Get-ChildItem $ServerDir -Filter 'fabric-server-*.jar' | Where-Object { $_.Name -ne $name } | Remove-Item -Force
+    return $name
+}
+
+# Versao minima do Java que a Mojang exige para uma versao do Minecraft
+# (a informacao vem da API do Paper). $null se nao der para saber.
+function Get-JavaMinimum($version) {
+    try {
+        $info = Invoke-RestMethod -Uri "https://fill.papermc.io/v3/projects/paper/versions/$version" -UserAgent $UserAgent -TimeoutSec 15
+        return [int]$info.version.java.version.minimum
+    } catch { return $null }
+}
+
+# Ha uma versao mais nova do programa publicada? Devolve o numero dela ou ''.
+# Consulta o GitHub no maximo uma vez a cada 6 horas (o resultado fica em cache).
+function Get-NewerProgramVersion {
+    if (-not $ProgramVersion) { return '' }
+    $cachePath = Join-Path $RuntimeDir 'versao-check.json'
+    $latest = ''
+    $fresh = $false
+    if (Test-Path $cachePath) {
+        try {
+            $cache = Get-Content $cachePath -Raw | ConvertFrom-Json
+            $latest = [string]$cache.ultima
+            $fresh = ((Get-Date) - (Get-Item $cachePath).LastWriteTime).TotalHours -lt 6
+        } catch { }
+    }
+    if (-not $fresh) {
+        try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$ProgramRepo/releases/latest" -UserAgent $UserAgent -TimeoutSec 8
+            $latest = ([string]$release.tag_name).TrimStart('v')
+            New-Item -ItemType Directory -Force $RuntimeDir | Out-Null
+            [IO.File]::WriteAllText($cachePath, (@{ ultima = $latest } | ConvertTo-Json))
+        } catch { }
+    }
+    try {
+        if ($latest -and ([version]$latest -gt [version]$ProgramVersion)) { return $latest }
+    } catch { }
+    return ''
+}
+
 function Confirm-Eula {
     $eula = Join-Path $ServerDir 'eula.txt'
     if ((Test-Path $eula) -and ((Get-Content $eula -Raw) -match 'eula\s*=\s*true')) { return $true }
@@ -575,6 +653,27 @@ $TunnelKey     = ([string]$Config.tunelChave).Trim()
 $TunnelAddress = ([string]$Config.tunelEndereco).Trim()
 $PlayitVersion = '2.0.2'   # versao do agente oficial baixada do GitHub do playit
 if ($Config.playitVersao) { $PlayitVersion = [string]$Config.playitVersao }
+
+# Tipo de servidor: "paper" (aceita plugins) ou "fabric" (aceita mods).
+$ServerType = ([string]$Config.tipoServidor).Trim().ToLower()
+if ($ServerType -notin 'paper', 'fabric') { $ServerType = 'paper' }
+
+# Memoria do servidor: cada PC pode ter a sua (arquivo local, fora do
+# repositorio); sem isso vale a do grupo, no config.json.
+$LocalConfigPath = Join-Path $RuntimeDir 'local.json'
+$Memory = [string]$Config.memoria
+if (Test-Path $LocalConfigPath) {
+    try {
+        $localConfig = Get-Content $LocalConfigPath -Raw | ConvertFrom-Json
+        if ($localConfig.memoria -match '^\d+[MG]$') { $Memory = [string]$localConfig.memoria }
+    } catch { }
+}
+
+# De onde vem o programa. Quem fizer um fork e publicar as proprias versoes troca aqui.
+$ProgramRepo = 'yuriacs/minecraft-compartilhado'
+$VersionFile = Join-Path $PSScriptRoot 'versao.txt'
+$ProgramVersion = ''
+if (Test-Path $VersionFile) { $ProgramVersion = (Get-Content $VersionFile -Raw).Trim() }
 $BackupMinutes = 20   # intervalo do backup automatico; 0 desliga
 if ($null -ne $Config.backupMinutos) { $BackupMinutes = [double]$Config.backupMinutos }
 $Branch = (Invoke-Git rev-parse --abbrev-ref HEAD)
@@ -637,6 +736,12 @@ if ($Status) {
             discord     = [bool]$WebhookUrl
             tunel       = [bool]$TunnelKey
             tunelEndereco = $TunnelAddress
+            tipoServidor = $ServerType
+            versaoMinecraft = [string]$Config.versaoMinecraft
+            memoria     = $Memory
+            memoriaGrupo = [string]$Config.memoria
+            versao      = $ProgramVersion
+            versaoNova  = (Get-NewerProgramVersion)
         }
         Emit ('STATUS@@' + ($info | ConvertTo-Json -Compress))
         exit 0
@@ -699,6 +804,191 @@ if ($PSBoundParameters.ContainsKey('SetWebhook')) {
     } else {
         Say 'Avisos no Discord desligados.' 'Green'
     }
+    exit 0
+}
+
+# ---------------------------------------------------------------- sincronizar este PC
+
+if ($SyncOnly) {
+    # Para quem so joga: traz plugins/mods/configuracao mais recentes sem hostear.
+    $localLock = Read-Lock
+    $mine = $localLock -and $localLock.host -eq $Me
+    if ($mine -or (@() | & git -C $Root status --porcelain)) {
+        Fail 'Este PC tem uma sessao ou alteracoes que ainda nao foram enviadas. Envie o mundo primeiro.'
+    }
+    if ($HasRemoteBranch -and -not (Test-Git merge --ff-only "origin/$Branch")) {
+        Fail 'Seu repositorio local divergiu do GitHub.'
+    }
+    Say 'Este PC esta com a versao mais recente do servidor.' 'Green'
+    exit 0
+}
+
+# ---------------------------------------------------------------- versao e tipo do servidor
+
+if ($ListVersions) {
+    $list = @()
+    try {
+        $all = (Invoke-RestMethod -Uri 'https://fill.papermc.io/v3/projects/paper/versions' -UserAgent $UserAgent -TimeoutSec 20).versions
+        foreach ($entry in $all) {
+            $id = [string]$entry.version.id
+            if ($id -notmatch '^\d+(\.\d+){1,2}$') { continue }   # pula pre-releases
+            $list += [ordered]@{ id = $id; java = [int]$entry.version.java.version.minimum }
+            if ($list.Count -ge 15) { break }
+        }
+    } catch {
+        Fail "Nao consegui consultar a lista de versoes do Minecraft. ($_)"
+    }
+    if ($Gui) {
+        $info = [ordered]@{ tipo = $ServerType; atual = [string]$Config.versaoMinecraft; versoes = @($list) }
+        Emit ('VERSIONS@@' + ($info | ConvertTo-Json -Compress -Depth 4))
+    } else {
+        Say "Servidor atual: $ServerType $($Config.versaoMinecraft). Versoes disponiveis:"
+        $list | ForEach-Object { Write-Host "    $($_.id)  (Java $($_.java))" }
+    }
+    exit 0
+}
+
+if ($PSBoundParameters.ContainsKey('SetServer')) {
+    $parts = $SetServer.Trim() -split '\|'
+    $type = ([string]$parts[0]).ToLower()
+    $mc = [string]$parts[1]
+    if ($type -notin 'paper', 'fabric') { Fail 'Tipo de servidor invalido. Use paper ou fabric.' }
+    if ($mc -notmatch '^\d+(\.\d+){1,2}$') { Fail 'Versao do Minecraft invalida.' }
+    Assert-ServerIdle 'trocar o servidor'
+
+    Say "Conferindo se existe $type para o Minecraft $mc..."
+    $javaMin = Get-JavaMinimum $mc
+    if ($type -eq 'paper' -and -not $javaMin) { Fail "O Paper nao tem a versao $mc." }
+    if ($type -eq 'fabric') {
+        $loaders = @()
+        try { $loaders = @(Get-JsonList "https://meta.fabricmc.net/v2/versions/loader/$mc") } catch { }
+        if ($loaders.Count -eq 0) { Fail "O Fabric nao tem versao para o Minecraft $mc." }
+    }
+
+    $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json   # relido apos o merge
+    $currentType = ([string]$Config.tipoServidor).Trim().ToLower()
+    if ($currentType -notin 'paper', 'fabric') { $currentType = 'paper' }
+    # O Paper e o Fabric guardam o mundo de formas diferentes: um nao abre o
+    # mundo criado pelo outro (o servidor trava ao iniciar). Por isso trocar de
+    # tipo so e aceito junto com "mundo-novo", que tira o mundo atual do
+    # servidor. Ele continua guardado nos saves.
+    $worldFolders = @('world', 'world_nether', 'world_the_end') | Where-Object { Test-Path (Join-Path $ServerDir $_) }
+    $newWorld = ([string]$parts[2]) -eq 'mundo-novo'
+    $resetWorld = ($type -ne $currentType) -and $worldFolders
+    if ($resetWorld -and -not $newWorld) {
+        Fail 'Trocar entre Paper e Fabric exige comecar um mundo novo, porque um nao abre o mundo do outro. Pela interface (Opcoes) isso e feito com confirmacao.'
+    }
+    $Config | Add-Member -NotePropertyName tipoServidor -NotePropertyValue $type -Force
+    $Config | Add-Member -NotePropertyName versaoMinecraft -NotePropertyValue $mc -Force
+    if ($javaMin) { $Config | Add-Member -NotePropertyName javaVersao -NotePropertyValue $javaMin -Force }
+    [IO.File]::WriteAllText($ConfigPath, ($Config | ConvertTo-Json) + "`n")
+    Invoke-Git add $ConfigPath
+    $extra = ''
+    if ($resetWorld) {
+        foreach ($folder in $worldFolders) {
+            Invoke-Git rm -r --quiet --ignore-unmatch "server/$folder"
+            Remove-Item (Join-Path $ServerDir $folder) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $extra = ', mundo novo'
+    }
+    if (Test-Git diff --cached --quiet) {
+        Say 'O servidor ja estava assim. Nada mudou.' 'Green'
+        exit 0
+    }
+    $label = 'Paper'
+    if ($type -eq 'fabric') { $label = 'Fabric' }
+    Invoke-Git commit --quiet -m "Servidor: $label $mc$extra (por $Me)"
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --hard --quiet 'HEAD~1'
+        Fail 'Nao consegui enviar a configuracao para o GitHub. Nada foi alterado.'
+    }
+    $notice = "$IconSwap **$Me** mudou o servidor para **$label $mc**. Todo mundo precisa jogar nessa vers$([char]0xE3)o do Minecraft."
+    if ($resetWorld) { $notice += " O servidor vai come$([char]0xE7)ar um mundo novo; o anterior continua guardado nos saves." }
+    Send-Discord $notice | Out-Null
+    Say "Servidor configurado: $label $mc. O proximo host baixa o que faltar." 'Green'
+    if ($resetWorld) { Say 'Um mundo novo sera criado na proxima vez que o servidor abrir. O anterior continua guardado nos saves.' 'Yellow' }
+    exit 0
+}
+
+# ---------------------------------------------------------------- plugins e mods
+
+if ($PSBoundParameters.ContainsKey('SaveChanges')) {
+    $message = (($SaveChanges -replace '[\r\n]+', ' ').Trim())
+    if (-not $message) { $message = 'Arquivos do servidor atualizados' }
+    if ($message.Length -gt 100) { $message = $message.Substring(0, 100) }
+
+    # Igual as outras tarefas de manutencao, mas aqui as alteracoes locais sao
+    # justamente o que se quer enviar.
+    if (Get-RemoteLock) { Fail 'O servidor esta aberto. Espere fechar para mudar plugins ou mods.' }
+    $ahead = 0
+    if ($HasRemoteBranch) { $ahead = [int](Invoke-Git rev-list --count "origin/$Branch..HEAD") }
+    if ((Read-Lock) -or $ahead -gt 0) { Fail 'Este PC tem uma sessao que ainda nao foi enviada. Envie o mundo primeiro.' }
+    if ($HasRemoteBranch -and -not (Test-Git merge --ff-only "origin/$Branch")) {
+        Fail 'Nao consegui juntar com o que esta no GitHub. Atualize a janela e tente de novo.'
+    }
+    # o GitHub recusa arquivos acima de 100 MB
+    $tooBig = Get-ChildItem (Join-Path $ServerDir 'plugins'), (Join-Path $ServerDir 'mods') -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Length -gt 95MB } | Select-Object -First 1
+    if ($tooBig) { Fail "O arquivo $($tooBig.Name) tem mais de 95 MB e o GitHub nao aceita. Remova-o." }
+
+    Add-World
+    if (Test-Git diff --cached --quiet) {
+        Say 'Nada mudou.' 'Green'
+        exit 0
+    }
+    Invoke-Git commit --quiet -m "$message (por $Me)"
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --soft --quiet 'HEAD~1'
+        Fail 'Nao consegui enviar para o GitHub. As alteracoes continuam neste PC; tente de novo.'
+    }
+    Say 'Alteracoes enviadas. Valem a partir da proxima vez que o servidor abrir.' 'Green'
+    exit 0
+}
+
+# ---------------------------------------------------------------- atualizar o programa
+
+if ($UpdateProgram) {
+    Assert-ServerIdle 'atualizar o programa'
+    Remove-Item (Join-Path $RuntimeDir 'versao-check.json') -Force -ErrorAction SilentlyContinue
+    $latest = Get-NewerProgramVersion
+    if (-not $latest) {
+        Say "O programa ja esta na versao mais recente ($ProgramVersion)." 'Green'
+        exit 0
+    }
+    Say "Baixando a versao $latest do programa..."
+    $staging = Join-Path $RuntimeDir 'atualizacao'
+    Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $staging | Out-Null
+    $files = 'host.ps1', 'gui.ps1', 'app.ico', 'versao.txt'
+    try {
+        foreach ($file in $files) {
+            $url = "https://raw.githubusercontent.com/$ProgramRepo/v$latest/scripts/$file"
+            Invoke-WebRequest -Uri $url -OutFile (Join-Path $staging $file) -UseBasicParsing -UserAgent $UserAgent
+        }
+        # nao troca nada se algum script vier quebrado
+        foreach ($file in 'host.ps1', 'gui.ps1') {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $staging $file), [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) { throw "$file veio com erro" }
+        }
+        if ((Get-Content (Join-Path $staging 'versao.txt') -Raw).Trim() -ne $latest) { throw 'a versao baixada nao confere' }
+    } catch {
+        Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+        Fail "Nao consegui baixar a atualizacao. Nada foi alterado. ($_)"
+    }
+    foreach ($file in $files) { Copy-Item (Join-Path $staging $file) (Join-Path $PSScriptRoot $file) -Force }
+    Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+    Invoke-Git add -A -- scripts
+    if (Test-Git diff --cached --quiet) {
+        Say 'O programa ja estava igual a versao mais recente.' 'Green'
+        exit 0
+    }
+    Invoke-Git commit --quiet -m "Atualiza o programa para a versao $latest (por $Me)"
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --hard --quiet 'HEAD~1'
+        Fail 'Nao consegui enviar a atualizacao para o GitHub. Nada foi alterado.'
+    }
+    Say "Programa atualizado para a versao $latest. Feche e abra o programa de novo." 'Green'
     exit 0
 }
 
@@ -984,7 +1274,15 @@ try {
     [IO.File]::WriteAllText($PidPath, "$PID|$((Get-Process -Id $PID).StartTime.Ticks)")
     if (Confirm-Eula) {
         $java = Get-Java ([int]$Config.javaVersao)
-        $jar  = Get-PaperJar $Config.versaoMinecraft
+        if ($ServerType -eq 'fabric') {
+            $jar = Get-FabricJar $Config.versaoMinecraft
+            $serverArgs = "-jar `"$jar`" nogui"
+        } else {
+            # terminal.jline=false: o Paper le comandos como texto simples, porque
+            # quem entrega os comandos a ele e este script (ver o laco abaixo).
+            $jar = Get-PaperJar $Config.versaoMinecraft
+            $serverArgs = "-Dterminal.jline=false -jar `"$jar`" nogui"
+        }
 
         Say 'Servidor iniciando!' 'Green'
         if ($TunnelKey) { $tunnel = Start-Tunnel }
@@ -1009,9 +1307,7 @@ try {
         Write-Host '    Para fechar e salvar: digite  stop  e aperte Enter. NAO feche a janela no X.'
         Write-Host ''
 
-        # terminal.jline=false: o servidor le comandos como texto simples, porque
-        # quem entrega os comandos a ele e este script (ver o laco abaixo).
-        $javaArgs = "-Xms$($Config.memoria) -Xmx$($Config.memoria) -Dterminal.jline=false -jar `"$jar`" nogui"
+        $javaArgs = "-Xms$Memory -Xmx$Memory $serverArgs"
         if ($Gui) { $javaArgs = "-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 $javaArgs" }
         Emit "STATE@@running@@$shown"
         # A entrada do servidor passa por este script: assim ele repassa o que

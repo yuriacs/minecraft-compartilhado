@@ -8,6 +8,7 @@ O mundo fica guardado num repositório privado do GitHub. Qualquer pessoa do gru
 - Backup automático a cada 20 minutos enquanto o servidor está aberto.
 - Se o PC do host cair, outra pessoa assume a partir do último backup.
 - Tudo por uma janela: hostear, parar e salvar, ver quem está online, whitelist e admin, restaurar um save anterior.
+- Plugins (Paper) ou mods (Fabric), com troca de versão do Minecraft pela própria janela.
 - Instalador próprio (com ícone e desinstalador, sem pedir permissão de administrador) e avisos no Discord quando o servidor abre e fecha.
 - Java e Paper são baixados sozinhos.
 
@@ -81,8 +82,13 @@ Qualquer outro comando do servidor vai na caixa de texto embaixo, sem a barra.
 
 ## Opções
 
-O botão **Opções** só funciona com o servidor fechado, porque mexe no repositório do grupo todo.
+Quase tudo em **Opções** só funciona com o servidor fechado, porque mexe no repositório do grupo todo.
 
+- **Plugins do servidor** (ou **Mods do servidor**, se o servidor for Fabric): adiciona e remove os arquivos `.jar` e envia a mudança para o grupo. Não coloque arquivos direto na pasta: use esta opção, que é ela que grava no GitHub.
+- **Tipo de servidor e versão do Minecraft**: escolhe entre **Paper** (aceita plugins; quem joga usa o Minecraft normal) e **Fabric** (aceita mods; todos precisam do Fabric e dos mesmos mods), e a versão do jogo. O programa acerta sozinho a versão do Java. Trocar entre Paper e Fabric começa um mundo novo, porque um não abre o mundo do outro; o mundo anterior continua guardado nos saves.
+- **Mods para jogar neste PC** (só aparece com servidor Fabric): explica como instalar o Fabric e copia os mods do grupo para a pasta de mods do seu Minecraft, sem apagar os que você colocou por conta própria. Com mods, quem só joga também precisa instalar este programa.
+- **Memória do servidor neste PC**: quanto de memória o servidor usa quando você hosteia. É um ajuste só do seu PC; os outros continuam com o deles. Esta opção funciona mesmo com o servidor de outra pessoa aberto.
+- **Atualizar o programa** (aparece quando há versão nova): baixa a versão mais recente do programa e grava para o grupo todo.
 - **Restaurar um save anterior**: mostra a lista de saves e backups e volta o mundo para o escolhido. O mundo de antes não é apagado; ele continua na lista.
 - **Compactar o histórico de saves**: mantém só os N saves mais recentes e apaga os mais antigos de vez, para o repositório não crescer sem limite. Os outros PCs do grupo se realinham sozinhos na próxima vez que abrirem o programa.
 - **Avisos no Discord**: o programa avisa num canal quando o servidor abre (com o endereço), fecha, ou muda de host. No Discord, no canal desejado: **Editar canal → Integrações → Webhooks → Novo webhook → Copiar URL do webhook**; cole o link na janela que abre. Para desligar, deixe o campo em branco. Quem tem o link do webhook consegue postar no canal, então ele só deve ficar em repositório privado.
@@ -106,7 +112,7 @@ O botão **Opções** só funciona com o servidor fechado, porque mexe no reposi
 
 ## Configuração
 
-- `scripts/config.json`: versão do Minecraft (`versaoMinecraft`), versão do Java (`javaVersao`), memória do servidor (`memoria`, ex. `4G`), intervalo do backup em minutos (`backupMinutos`; `0` desliga) e o link dos avisos do Discord. Para atualizar o Minecraft, mude `versaoMinecraft` pelo site do GitHub (lápis **Edit**), confira no site do Paper qual Java a versão exige, e salve com **Commit changes**; o próximo host baixa o Paper novo.
+- `scripts/config.json`: guarda o que vale para o grupo (tipo e versão do servidor, memória padrão, intervalo do backup em `backupMinutos`, Discord e túnel). Quase tudo se muda por **Opções**; só o intervalo do backup e a memória padrão do grupo (`memoria`) são editados à mão, pelo site do GitHub (lápis **Edit**).
 - `server/server.properties`, `ops.json`, `whitelist.json` e os plugins em `server/plugins/` são sincronizados junto com o mundo.
 - Só entra quem tem Minecraft original, a não ser que você mude `online-mode` no `server.properties`.
 

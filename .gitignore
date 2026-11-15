@@ -12,5 +12,8 @@ server/.console_history
 server/plugins/.paper-remapped/
 **/session.lock
 
+# Cache do servidor Fabric
+server/.fabric/
+
 # Instalador gerado localmente
 dist/

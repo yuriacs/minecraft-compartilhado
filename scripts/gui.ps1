@@ -98,6 +98,12 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
       <Button x:Name="OptionsBtn" Style="{StaticResource Btn}" Content="Opções ▾" DockPanel.Dock="Right">
         <Button.ContextMenu>
           <ContextMenu>
+            <MenuItem x:Name="MenuUpdate" Header="Atualizar o programa..." Visibility="Collapsed" FontWeight="Bold"/>
+            <MenuItem x:Name="MenuAddons" Header="Plugins do servidor..."/>
+            <MenuItem x:Name="MenuClientMods" Header="Mods para jogar neste PC..." Visibility="Collapsed"/>
+            <MenuItem x:Name="MenuServer" Header="Tipo de servidor e versão do Minecraft..."/>
+            <MenuItem x:Name="MenuMemory" Header="Memória do servidor neste PC..."/>
+            <Separator/>
             <MenuItem x:Name="MenuRestore" Header="Restaurar um save anterior..."/>
             <MenuItem x:Name="MenuPrune" Header="Compactar o histórico de saves..."/>
             <Separator/>
@@ -163,6 +169,7 @@ $IconPath = Join-Path $PSScriptRoot 'app.ico'
 if (Test-Path $IconPath) { try { $Window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$IconPath) } catch { } }
 foreach ($name in 'Dot', 'StatusTitle', 'StatusDetail', 'AddressRow', 'AddressText', 'CopyBtn',
                   'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'OptionsBtn', 'MenuRestore', 'MenuPrune', 'MenuDiscord', 'MenuTunnel',
+                  'MenuUpdate', 'MenuAddons', 'MenuClientMods', 'MenuServer', 'MenuMemory',
                   'LogBox', 'CommandBox', 'SendBtn', 'PlayersPanel', 'PlayersTitle', 'PlayersList', 'NickBox',
                   'WlAddBtn', 'WlRemoveBtn', 'OpBtn', 'DeopBtn', 'KickBtn', 'WhitelistCheck') {
     Set-Variable -Name $name -Value $Window.FindName($name) -Scope Script
@@ -175,7 +182,11 @@ $script:Kind           = $null   # 'status' | 'saves' | 'host' | 'save' | 'maint
 $script:MaintTitle     = ''      # textos mostrados durante uma tarefa de manutencao
 $script:MaintDetail    = ''
 $script:Saves          = $null   # resposta do host.ps1 -ListSaves
-$script:AfterSaves     = $null   # o que abrir quando a lista de saves chegar: 'restore' | 'prune'
+$script:AfterSaves     = $null   # o que fazer quando uma consulta silenciosa terminar:
+                                 # 'restore' | 'prune' | 'server' | 'copymods'
+$script:Versions       = $null   # resposta do host.ps1 -ListVersions
+# consultas que rodam sem mostrar nada no quadro de mensagens
+$script:QuietKinds     = 'status', 'saves', 'versions', 'sync'
 $script:CanMaintain    = $false  # restaurar/compactar/configurar so com o servidor fechado
 $script:Players        = New-Object System.Collections.Generic.List[string]
 $script:Phase          = $null   # do host: 'sync' | 'running' | 'ready' | 'saving'
@@ -306,11 +317,15 @@ function Update-Ui {
     else {
         $title = 'Ninguém está hosteando'
         $detail = 'Clique em Hostear servidor para abrir o mundo para o grupo.'
+        if ($st.versaoMinecraft) {
+            $kindName = if ($st.tipoServidor -eq 'fabric') { 'Fabric (mods)' } else { 'Paper' }
+            $detail += "`nServidor: $kindName, Minecraft $($st.versaoMinecraft). Memória neste PC: $($st.memoria)."
+        }
         $primary = 'host'; $primaryText = 'Hostear servidor'
     }
 
     # durante uma checagem de status os botoes ficam travados
-    if ($busy -and $script:Kind -in 'status', 'saves') { $primaryEnabled = $false }
+    if ($busy -and $script:Kind -in $script:QuietKinds) { $primaryEnabled = $false }
 
     $script:Dot.Fill = $Colors[$dot]
     $script:StatusTitle.Text = $title
@@ -334,6 +349,17 @@ function Update-Ui {
     $script:OptionsBtn.IsEnabled = -not $busy
     $script:MenuDiscord.Header = if ($st -and $st.discord) { 'Avisos no Discord: ligados...' } else { 'Ligar avisos no Discord...' }
     $script:MenuTunnel.Header = if ($st -and $st.tunel) { 'Conexão por túnel: ligada...' } else { 'Conexão por túnel (sem Radmin)...' }
+    $isFabric = [bool]($st -and $st.tipoServidor -eq 'fabric')
+    $script:MenuAddons.Header = if ($isFabric) { 'Mods do servidor...' } else { 'Plugins do servidor...' }
+    $script:MenuClientMods.Visibility = if ($isFabric) { 'Visible' } else { 'Collapsed' }
+    if ($st -and $st.versaoNova) {
+        $script:MenuUpdate.Header = "Atualizar o programa para a versão $($st.versaoNova)..."
+        $script:MenuUpdate.Visibility = 'Visible'
+        $script:OptionsBtn.Content = 'Opções ▾  (atualização)'
+    } else {
+        $script:MenuUpdate.Visibility = 'Collapsed'
+        $script:OptionsBtn.Content = 'Opções ▾'
+    }
     $serverUp = $busy -and $script:Kind -eq 'host' -and $script:Phase -in 'running', 'ready' -and -not $script:Stopping
     $script:CommandBox.IsEnabled = $serverUp
     $script:SendBtn.IsEnabled = $serverUp
@@ -453,6 +479,9 @@ function Receive-Line($line) {
                 $script:Status = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
                 $script:StatusFailed = $false
             }
+            'VERSIONS' {
+                $script:Versions = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
+            }
             'SAVES' {
                 $script:Saves = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
             }
@@ -469,7 +498,7 @@ function Receive-Line($line) {
         return
     }
 
-    if ($script:Kind -in 'status', 'saves') {
+    if ($script:Kind -in $script:QuietKinds) {
         $script:StatusLines += $line
         return
     }
@@ -514,15 +543,21 @@ function Complete-HostScript {
             $script:StatusLines | Where-Object { $_.Trim() } | ForEach-Object { Add-Log $_ }
         }
         Update-Ui
-    } elseif ($kind -eq 'saves') {
+    } elseif ($kind -in $script:QuietKinds) {
         Update-Ui
-        if ($code -ne 0 -or -not $script:Saves) {
+        $after = $script:AfterSaves
+        $script:AfterSaves = $null
+        if ($code -ne 0) {
             $script:StatusLines | Where-Object { $_.Trim() } | ForEach-Object { Add-Log $_ }
-            Add-Log 'Não consegui ler a lista de saves.'
-        } elseif ($script:AfterSaves -eq 'restore') {
+            Add-Log 'Não consegui concluir a consulta. Veja a mensagem acima.'
+        } elseif ($after -eq 'restore' -and $script:Saves) {
             Show-RestoreDialog
-        } elseif ($script:AfterSaves -eq 'prune') {
+        } elseif ($after -eq 'prune' -and $script:Saves) {
             Show-PruneDialog
+        } elseif ($after -eq 'server' -and $script:Versions) {
+            Show-ServerDialog
+        } elseif ($after -eq 'copymods') {
+            Copy-GroupMods
         }
     } else {
         Add-Log ''
@@ -625,6 +660,317 @@ function Show-DiscordDialog {
         return
     }
     Start-Maintenance 'Configurando os avisos do Discord...' 'Testando o link e gravando a configuração para o grupo todo.' "-SetWebhook `"$url`""
+}
+
+# Monta uma janela de dialogo a partir de XAML, ja com dono e icone.
+function New-Dialog([string]$xamlText) {
+    [xml]$doc = $xamlText
+    $dialog = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $doc))
+    $dialog.Owner = $Window
+    $dialog.Icon = $Window.Icon
+    return $dialog
+}
+
+# ---- plugins (Paper) ou mods (Fabric) do servidor
+
+function Update-AddonsList {
+    $list = $script:Addons.List
+    $list.Items.Clear()
+    foreach ($name in $script:Addons.Existing) {
+        if ($script:Addons.Remove -contains $name) { continue }
+        [void]$list.Items.Add($name)
+    }
+    foreach ($path in $script:Addons.Add) { [void]$list.Items.Add("$(Split-Path -Leaf $path)    (novo)") }
+    $script:Addons.Empty.Visibility = if ($list.Items.Count -eq 0) { 'Visible' } else { 'Collapsed' }
+}
+
+function Show-AddonsDialog {
+    $isFabric = [bool]($script:Status -and $script:Status.tipoServidor -eq 'fabric')
+    $folderName = if ($isFabric) { 'mods' } else { 'plugins' }
+    $word = if ($isFabric) { 'mods' } else { 'plugins' }
+    $folder = Join-Path $Root "server\$folderName"
+    $hint = if ($isFabric) {
+        'Arquivos .jar de mods para Fabric, na mesma versão do Minecraft do servidor. Quem joga precisa dos mesmos mods no próprio Minecraft (Opções > Mods para jogar neste PC).'
+    } else {
+        'Arquivos .jar de plugins para Paper/Spigot/Bukkit. Eles rodam só no servidor: quem joga não precisa instalar nada.'
+    }
+    $dialog = New-Dialog @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Width="600" Height="500" MinWidth="460" MinHeight="340"
+        Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
+  <DockPanel Margin="18">
+    <TextBlock Name="HintText" DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,0,0,12"/>
+    <DockPanel DockPanel.Dock="Bottom" Margin="0,14,0,0" LastChildFill="False">
+      <Button Name="AddBtn" DockPanel.Dock="Left" Content="Adicionar arquivos..." Padding="16,9" Margin="0,0,10,0"/>
+      <Button Name="RemoveBtn" DockPanel.Dock="Left" Content="Remover selecionado" Padding="16,9"/>
+      <Button Name="SaveBtn" DockPanel.Dock="Right" Content="Salvar e enviar" Padding="18,9" IsDefault="True"/>
+      <Button Name="CancelBtn" DockPanel.Dock="Right" Content="Cancelar" Padding="16,9" Margin="0,0,10,0" IsCancel="True"/>
+    </DockPanel>
+    <Grid>
+      <ListBox Name="AddonList" Background="#0D1117" Foreground="#E6EDF3" BorderThickness="0" Padding="6"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+      <TextBlock Name="EmptyText" Text="Nenhum arquivo ainda." Foreground="#6E7681" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Grid>
+  </DockPanel>
+</Window>
+'@
+    $dialog.Title = if ($isFabric) { 'Mods do servidor' } else { 'Plugins do servidor' }
+    $dialog.FindName('HintText').Text = $hint
+    $existing = @()
+    if (Test-Path $folder) { $existing = @(Get-ChildItem $folder -Filter '*.jar' -File | Sort-Object Name | ForEach-Object { $_.Name }) }
+    $script:Addons = @{
+        Existing = $existing
+        Add      = New-Object System.Collections.Generic.List[string]
+        Remove   = New-Object System.Collections.Generic.List[string]
+        List     = $dialog.FindName('AddonList')
+        Empty    = $dialog.FindName('EmptyText')
+        Dialog   = $dialog
+    }
+    Update-AddonsList
+
+    $dialog.FindName('AddBtn').Add_Click({
+        $picker = New-Object Microsoft.Win32.OpenFileDialog
+        $picker.Filter = 'Arquivos .jar|*.jar'
+        $picker.Multiselect = $true
+        if ($picker.ShowDialog($script:Addons.Dialog)) {
+            foreach ($file in $picker.FileNames) {
+                if ((Get-Item $file).Length -gt 95MB) {
+                    [Windows.MessageBox]::Show($script:Addons.Dialog, "$(Split-Path -Leaf $file) tem mais de 95 MB. O GitHub não aceita arquivos desse tamanho.",
+                        'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+                    continue
+                }
+                $name = Split-Path -Leaf $file
+                # um arquivo com o mesmo nome substitui o anterior
+                $old = @($script:Addons.Add | Where-Object { (Split-Path -Leaf $_) -eq $name })
+                foreach ($entry in $old) { [void]$script:Addons.Add.Remove($entry) }
+                $script:Addons.Add.Add($file)
+            }
+            Update-AddonsList
+        }
+    })
+    $dialog.FindName('RemoveBtn').Add_Click({
+        $selected = [string]$script:Addons.List.SelectedItem
+        if (-not $selected) { return }
+        if ($selected -match '^(.*)    \(novo\)$') {
+            $name = $Matches[1]
+            $entry = $script:Addons.Add | Where-Object { (Split-Path -Leaf $_) -eq $name } | Select-Object -First 1
+            if ($entry) { [void]$script:Addons.Add.Remove($entry) }
+        } else {
+            $script:Addons.Remove.Add($selected)
+        }
+        Update-AddonsList
+    })
+    $dialog.FindName('SaveBtn').Add_Click({ $script:Addons.Dialog.DialogResult = $true })
+    if (-not $dialog.ShowDialog()) { return }
+    if ($script:Addons.Add.Count -eq 0 -and $script:Addons.Remove.Count -eq 0) { return }
+
+    # so agora os arquivos sao mexidos de verdade; em seguida o host.ps1 envia
+    New-Item -ItemType Directory -Force $folder | Out-Null
+    foreach ($name in $script:Addons.Remove) { Remove-Item (Join-Path $folder $name) -Force -ErrorAction SilentlyContinue }
+    foreach ($path in $script:Addons.Add) { Copy-Item $path (Join-Path $folder (Split-Path -Leaf $path)) -Force }
+    $message = if ($isFabric) { 'Mods do servidor atualizados' } else { 'Plugins do servidor atualizados' }
+    Start-Maintenance "Enviando os $word..." 'Gravando a mudança para o grupo todo.' "-SaveChanges `"$message`""
+}
+
+# ---- tipo de servidor e versao do Minecraft
+
+function Show-ServerDialog {
+    $info = $script:Versions
+    $dialog = New-Dialog @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Tipo de servidor e versão do Minecraft" Width="600" Height="560" MinWidth="460" MinHeight="420"
+        Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
+  <DockPanel Margin="18">
+    <StackPanel DockPanel.Dock="Top">
+      <TextBlock Text="Tipo de servidor" FontWeight="SemiBold"/>
+      <RadioButton Name="PaperRadio" GroupName="Kind" Foreground="#E6EDF3" Margin="0,8,0,0"
+                   Content="Paper: aceita plugins. Quem joga usa o Minecraft normal, sem instalar nada."/>
+      <RadioButton Name="FabricRadio" GroupName="Kind" Foreground="#E6EDF3" Margin="0,6,0,16"
+                   Content="Fabric: aceita mods. Todos precisam do Fabric e dos mesmos mods no jogo."/>
+      <TextBlock Text="Versão do Minecraft" FontWeight="SemiBold" Margin="0,0,0,6"/>
+    </StackPanel>
+    <StackPanel DockPanel.Dock="Bottom">
+      <TextBlock TextWrapping="Wrap" Foreground="#D29922" FontSize="12.5" Margin="0,12,0,14"
+                 Text="Todos do grupo precisam jogar na mesma versão. Voltar para uma versão mais antiga pode estragar partes do mundo. Trocar entre Paper e Fabric começa um MUNDO NOVO, porque um não abre o mundo do outro; o mundo atual continua guardado nos saves."/>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button Name="CancelBtn" Content="Cancelar" Padding="16,9" Margin="0,0,10,0" IsCancel="True"/>
+        <Button Name="SaveBtn" Content="Salvar" Padding="22,9" IsDefault="True"/>
+      </StackPanel>
+    </StackPanel>
+    <ListBox Name="VersionList" Background="#0D1117" Foreground="#E6EDF3" BorderThickness="0" Padding="6" FontFamily="Consolas"/>
+  </DockPanel>
+</Window>
+'@
+    $paper = $dialog.FindName('PaperRadio')
+    $fabric = $dialog.FindName('FabricRadio')
+    $list = $dialog.FindName('VersionList')
+    if ($info.tipo -eq 'fabric') { $fabric.IsChecked = $true } else { $paper.IsChecked = $true }
+    $versions = @($info.versoes)
+    foreach ($version in $versions) {
+        $label = "$($version.id)".PadRight(10) + "Java $($version.java)"
+        if ($version.id -eq $info.atual) { $label += '    (atual)' }
+        [void]$list.Items.Add($label)
+    }
+    for ($i = 0; $i -lt $versions.Count; $i++) { if ($versions[$i].id -eq $info.atual) { $list.SelectedIndex = $i } }
+    $dialog.FindName('SaveBtn').Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
+    if (-not $dialog.ShowDialog()) { return }
+    if ($list.SelectedIndex -lt 0) { return }
+
+    $type = if ($fabric.IsChecked) { 'fabric' } else { 'paper' }
+    $chosen = [string]$versions[$list.SelectedIndex].id
+    if ($type -eq $info.tipo -and $chosen -eq $info.atual) { return }
+    $typeName = if ($type -eq 'fabric') { 'Fabric' } else { 'Paper' }
+    $question = "Mudar o servidor do grupo para $typeName, Minecraft $chosen?`n`nTodo mundo vai precisar jogar nessa versão."
+    $argument = "$type|$chosen"
+    if ($type -ne $info.tipo) {
+        $question += "`n`nATENÇÃO: trocar entre Paper e Fabric começa um MUNDO NOVO. O mundo atual sai do servidor, mas continua guardado nos saves: para tê-lo de volta, volte para o tipo anterior e use Restaurar um save anterior."
+        $argument += '|mundo-novo'
+    }
+    $answer = [Windows.MessageBox]::Show($Window, $question, 'Minecraft Compartilhado', 'YesNo', 'Warning')
+    if ($answer -ne 'Yes') { return }
+    Start-Maintenance 'Configurando o servidor...' "Mudando para $typeName, Minecraft $chosen." "-SetServer `"$argument`""
+}
+
+# ---- memoria do servidor neste PC (ajuste local, nao vai para o repositorio)
+
+function Show-MemoryDialog {
+    $st = $script:Status
+    $totalGb = 0
+    try { $totalGb = [Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB) } catch { }
+    $dialog = New-Dialog @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Memória do servidor neste PC" Width="520" SizeToContent="Height" ResizeMode="NoResize"
+        Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
+  <StackPanel Margin="22">
+    <TextBlock Name="InfoText" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,0,0,14"/>
+    <ComboBox Name="MemoryBox" Padding="10,7" Margin="0,0,0,18"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button Name="CancelBtn" Content="Cancelar" Padding="16,9" Margin="0,0,10,0" IsCancel="True"/>
+      <Button Name="SaveBtn" Content="Salvar" Padding="22,9" IsDefault="True"/>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+    $ramText = if ($totalGb -gt 0) { "Este PC tem $totalGb GB de memória. " } else { '' }
+    $dialog.FindName('InfoText').Text = $ramText + 'Quanto dela o servidor de Minecraft pode usar quando você hosteia. ' +
+        'Deixe pelo menos uns 4 GB livres para o Windows e para o seu próprio jogo. Este ajuste vale só para este PC.'
+    $box = $dialog.FindName('MemoryBox')
+    $groupDefault = [string]$st.memoriaGrupo
+    $values = @('')   # '' = padrao do grupo
+    [void]$box.Items.Add("Padrão do grupo ($groupDefault)")
+    foreach ($gb in 2, 3, 4, 6, 8, 10, 12, 16) {
+        if ($totalGb -gt 0 -and $gb -gt ($totalGb - 2)) { continue }
+        $values += "${gb}G"
+        [void]$box.Items.Add("$gb GB")
+    }
+    $localFile = Join-Path $Root '.runtime\local.json'
+    $current = ''
+    if (Test-Path $localFile) { try { $current = [string](Get-Content $localFile -Raw | ConvertFrom-Json).memoria } catch { } }
+    $box.SelectedIndex = [Math]::Max(0, [array]::IndexOf($values, $current))
+    $dialog.FindName('SaveBtn').Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
+    if (-not $dialog.ShowDialog()) { return }
+
+    $chosen = $values[$box.SelectedIndex]
+    if ($chosen) {
+        New-Item -ItemType Directory -Force (Split-Path $localFile) | Out-Null
+        [IO.File]::WriteAllText($localFile, (@{ memoria = $chosen } | ConvertTo-Json) + "`n")
+    } else {
+        Remove-Item $localFile -Force -ErrorAction SilentlyContinue
+    }
+    Start-HostScript 'status' '-Status'   # mostra o valor novo
+}
+
+# ---- mods no Minecraft de quem joga (so com servidor Fabric)
+
+# Copia os mods do grupo para a pasta de mods do Minecraft deste PC. So mexe
+# nos arquivos que ele mesmo colocou antes (lista guardada num arquivo ao lado).
+# Devolve o que aconteceu, sem mostrar nada na tela.
+function Sync-GroupMods($gameFolder) {
+    $source = Join-Path $Root 'server\mods'
+    $mods = @()
+    if (Test-Path $source) { $mods = @(Get-ChildItem $source -Filter '*.jar' -File) }
+    $result = @{ Status = 'ok'; Source = $source; Target = (Join-Path $gameFolder 'mods'); Copied = $mods.Count; Others = 0 }
+    if ($mods.Count -eq 0) { $result.Status = 'sem-mods'; return $result }
+    if (-not (Test-Path $gameFolder)) { $result.Status = 'sem-jogo'; return $result }
+
+    $target = $result.Target
+    New-Item -ItemType Directory -Force $target | Out-Null
+    $manifest = Join-Path $target '.minecraft-compartilhado.json'
+    $previous = @()
+    if (Test-Path $manifest) { try { $previous = @((Get-Content $manifest -Raw | ConvertFrom-Json).arquivos) } catch { } }
+    $names = @($mods | ForEach-Object { $_.Name })
+
+    # tira os mods do grupo que sairam; os que a pessoa colocou por conta propria ficam
+    foreach ($name in $previous) {
+        if ($names -notcontains $name) { Remove-Item (Join-Path $target $name) -Force -ErrorAction SilentlyContinue }
+    }
+    foreach ($mod in $mods) { Copy-Item $mod.FullName (Join-Path $target $mod.Name) -Force }
+    [IO.File]::WriteAllText($manifest, (@{ arquivos = $names } | ConvertTo-Json) + "`n")
+    $result.Others = @(Get-ChildItem $target -Filter '*.jar' -File | Where-Object { $names -notcontains $_.Name }).Count
+    return $result
+}
+
+function Copy-GroupMods {
+    $result = Sync-GroupMods (Join-Path $env:APPDATA '.minecraft')
+    if ($result.Status -eq 'sem-mods') {
+        [Windows.MessageBox]::Show($Window, 'O grupo ainda não tem nenhum mod no servidor.', 'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+        return
+    }
+    if ($result.Status -eq 'sem-jogo') {
+        [Windows.MessageBox]::Show($Window,
+            "Não achei o Minecraft na pasta padrão (%APPDATA%\.minecraft).`n`nSe você usa outro launcher, copie os mods à mão: vou abrir a pasta onde eles estão.",
+            'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+        Start-Process explorer.exe $result.Source
+        return
+    }
+    $text = "$($result.Copied) mods do grupo copiados para:`n$($result.Target)"
+    if ($result.Others -gt 0) {
+        $text += "`n`nEssa pasta também tem $($result.Others) mods que não são do grupo. Não mexi neles, mas se o jogo não abrir ou não conectar, tire-os de lá."
+    }
+    [Windows.MessageBox]::Show($Window, $text, 'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+}
+
+function Show-ClientModsDialog {
+    $st = $script:Status
+    $dialog = New-Dialog @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Mods para jogar neste PC" Width="600" SizeToContent="Height" ResizeMode="NoResize"
+        Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
+  <StackPanel Margin="22">
+    <TextBlock Name="IntroText" TextWrapping="Wrap" Margin="0,0,0,16"/>
+    <TextBlock Text="1. Instale o Fabric no seu Minecraft" FontWeight="SemiBold"/>
+    <TextBlock Name="FabricText" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,4,0,8"/>
+    <Button Name="FabricBtn" Content="Abrir o site do Fabric" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,18"/>
+    <TextBlock Text="2. Copie os mods do grupo" FontWeight="SemiBold"/>
+    <TextBlock TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,4,0,8"
+               Text="Copia os mods do servidor para a pasta de mods do seu Minecraft. Repita sempre que o grupo mudar os mods. Mods que você colocou por conta própria não são apagados."/>
+    <StackPanel Orientation="Horizontal" Margin="0,0,0,18">
+      <Button Name="CopyBtn" Content="Copiar os mods do grupo" Padding="16,9" Margin="0,0,10,0"/>
+      <Button Name="FolderBtn" Content="Abrir a pasta dos mods do grupo" Padding="16,9"/>
+    </StackPanel>
+    <Button Name="CloseBtn" Content="Fechar" HorizontalAlignment="Right" Padding="22,9" IsCancel="True"/>
+  </StackPanel>
+</Window>
+'@
+    $dialog.FindName('IntroText').Text = "O servidor do grupo usa mods (Fabric, Minecraft $($st.versaoMinecraft)). Para entrar, o seu Minecraft precisa do Fabric e dos mesmos mods."
+    $dialog.FindName('FabricText').Text = "No site, baixe o instalador para Windows, abra-o e escolha a versão $($st.versaoMinecraft) do Minecraft. Ele cria um perfil 'fabric-loader' no launcher oficial; é com esse perfil que você joga."
+    $choice = @{ Action = $null }
+    $dialog.FindName('FabricBtn').Add_Click({ Start-Process 'https://fabricmc.net/use/installer/' })
+    $dialog.FindName('FolderBtn').Add_Click({
+        $folder = Join-Path $Root 'server\mods'
+        New-Item -ItemType Directory -Force $folder | Out-Null
+        Start-Process explorer.exe $folder
+    })
+    $dialog.FindName('CopyBtn').Add_Click({ $choice.Action = 'copy'; $dialog.DialogResult = $true }.GetNewClosure())
+    [void]$dialog.ShowDialog()
+    if ($choice.Action -ne 'copy') { return }
+    # antes de copiar, traz os mods mais recentes do GitHub para este PC
+    $script:AfterSaves = 'copymods'
+    Start-HostScript 'sync' '-SyncOnly'
 }
 
 # Liga, troca ou desliga o tunel do playit.gg para o grupo.
@@ -785,6 +1131,21 @@ $OptionsBtn.Add_Click({
 })
 $MenuDiscord.Add_Click({ if (Test-CanMaintain) { Show-DiscordDialog } })
 $MenuTunnel.Add_Click({ if (Test-CanMaintain) { Show-TunnelDialog } })
+$MenuAddons.Add_Click({ if (Test-CanMaintain) { Show-AddonsDialog } })
+$MenuServer.Add_Click({
+    if (Test-CanMaintain) { $script:AfterSaves = 'server'; $script:Versions = $null; Start-HostScript 'versions' '-ListVersions' }
+})
+$MenuMemory.Add_Click({ if ($script:Status) { Show-MemoryDialog } })
+$MenuClientMods.Add_Click({ if ($script:Status) { Show-ClientModsDialog } })
+$MenuUpdate.Add_Click({
+    if (-not (Test-CanMaintain)) { return }
+    $answer = [Windows.MessageBox]::Show($Window,
+        "Atualizar o programa do grupo para a versão $($script:Status.versaoNova)?`n`nA atualização vale para todos do grupo. Depois, feche e abra o programa de novo.",
+        'Minecraft Compartilhado', 'YesNo', 'Question')
+    if ($answer -eq 'Yes') {
+        Start-Maintenance 'Atualizando o programa...' 'Baixando a versão nova e gravando para o grupo todo.' '-UpdateProgram'
+    }
+})
 $MenuRestore.Add_Click({
     if (Test-CanMaintain) { $script:AfterSaves = 'restore'; $script:Saves = $null; Start-HostScript 'saves' '-ListSaves' }
 })
@@ -815,7 +1176,7 @@ $CopyBtn.Add_Click({
 $CopyBtn.Add_MouseLeave({ $script:CopyBtn.Content = 'Copiar endereço' })
 
 $Window.Add_Closing({
-    if (-not $script:Proc -or $script:Kind -in 'status', 'saves') { return }
+    if (-not $script:Proc -or $script:Kind -in $script:QuietKinds) { return }
     if ($script:CloseWhenDone) { $_.Cancel = $true; return }   # ja esta fechando, so falta salvar
 
     $_.Cancel = $true
