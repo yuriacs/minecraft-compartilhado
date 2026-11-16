@@ -100,15 +100,17 @@ $HostScript = Join-Path $PSScriptRoot 'host.ps1'
           <ContextMenu>
             <MenuItem x:Name="MenuUpdate" Header="Atualizar o programa..." Visibility="Collapsed" FontWeight="Bold"/>
             <MenuItem x:Name="MenuAddons" Header="Plugins do servidor..."/>
+            <MenuItem x:Name="MenuPack" Header="Importar modpack (.zip ou .mrpack)..."/>
             <MenuItem x:Name="MenuClientMods" Header="Mods para jogar neste PC..." Visibility="Collapsed"/>
             <MenuItem x:Name="MenuServer" Header="Tipo de servidor e versão do Minecraft..."/>
-            <MenuItem x:Name="MenuMemory" Header="Memória do servidor neste PC..."/>
+            <MenuItem x:Name="MenuMemory" Header="Ajustes deste PC (memória, fechar quando esvaziar)..."/>
             <Separator/>
             <MenuItem x:Name="MenuRestore" Header="Restaurar um save anterior..."/>
             <MenuItem x:Name="MenuPrune" Header="Compactar o histórico de saves..."/>
             <Separator/>
             <MenuItem x:Name="MenuDiscord" Header="Avisos no Discord..."/>
             <MenuItem x:Name="MenuTunnel" Header="Conexão por túnel (sem Radmin)..."/>
+            <MenuItem x:Name="MenuDirect" Header="Conexão direta (porta no roteador)..."/>
           </ContextMenu>
         </Button.ContextMenu>
       </Button>
@@ -169,7 +171,7 @@ $IconPath = Join-Path $PSScriptRoot 'app.ico'
 if (Test-Path $IconPath) { try { $Window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$IconPath) } catch { } }
 foreach ($name in 'Dot', 'StatusTitle', 'StatusDetail', 'AddressRow', 'AddressText', 'CopyBtn',
                   'PrimaryBtn', 'SecondaryBtn', 'RefreshBtn', 'OptionsBtn', 'MenuRestore', 'MenuPrune', 'MenuDiscord', 'MenuTunnel',
-                  'MenuUpdate', 'MenuAddons', 'MenuClientMods', 'MenuServer', 'MenuMemory',
+                  'MenuUpdate', 'MenuAddons', 'MenuClientMods', 'MenuServer', 'MenuMemory', 'MenuDirect', 'MenuPack',
                   'LogBox', 'CommandBox', 'SendBtn', 'PlayersPanel', 'PlayersTitle', 'PlayersList', 'NickBox',
                   'WlAddBtn', 'WlRemoveBtn', 'OpBtn', 'DeopBtn', 'KickBtn', 'WhitelistCheck') {
     Set-Variable -Name $name -Value $Window.FindName($name) -Scope Script
@@ -186,7 +188,9 @@ $script:AfterSaves     = $null   # o que fazer quando uma consulta silenciosa te
                                  # 'restore' | 'prune' | 'server' | 'copymods'
 $script:Versions       = $null   # resposta do host.ps1 -ListVersions
 # consultas que rodam sem mostrar nada no quadro de mensagens
-$script:QuietKinds     = 'status', 'saves', 'versions', 'sync'
+$script:QuietKinds     = 'status', 'saves', 'versions', 'sync', 'inspect'
+$script:Pack           = $null   # resposta do host.ps1 -InspectPack
+$script:PackPath       = ''      # arquivo do modpack escolhido
 $script:CanMaintain    = $false  # restaurar/compactar/configurar so com o servidor fechado
 $script:Players        = New-Object System.Collections.Generic.List[string]
 $script:Phase          = $null   # do host: 'sync' | 'running' | 'ready' | 'saving'
@@ -196,6 +200,7 @@ $script:Status         = $null   # ultimo status recebido do host.ps1
 $script:StatusFailed   = $false
 $script:StatusLines    = @()     # saida da checagem de status (so vai para o log se falhar)
 $script:Address        = ''
+$script:Reserve        = ''      # endereco alternativo (tunel) quando a conexao e direta
 $script:Stopping       = $false
 $script:CloseWhenDone  = $false
 $script:PrimaryAction  = $null
@@ -249,6 +254,7 @@ function Update-Ui {
             'ready' {
                 $dot = 'green'; $title = 'Você está hosteando'
                 $detail = 'Passe o endereço abaixo para seus amigos. Você mesmo entra por: localhost'
+                if ($script:Reserve) { $detail += "`nSe algum amigo não conseguir conectar, o endereço reserva é: $($script:Reserve)" }
                 $address = $script:Address
                 $primary = 'stop'; $primaryText = 'Parar e salvar'; $primaryColor = $Colors.red
             }
@@ -299,6 +305,7 @@ function Update-Ui {
         $detail = "Desde $($st.trava.desde). Entre no Minecraft pelo endereço abaixo."
         $address = $st.trava.endereco
         if (-not $address) { $detail = "Desde $($st.trava.desde). Peça o endereço para $($st.trava.host)." }
+        if ($st.trava.reserva) { $detail += " Se não conectar, tente: $($st.trava.reserva)" }
         if ($st.semSinal) {
             # o host manda um sinal a cada backup automatico; sem sinal, provavelmente caiu
             $dot = 'yellow'; $title = "$($st.trava.host) pode ter caído"
@@ -318,7 +325,8 @@ function Update-Ui {
         $title = 'Ninguém está hosteando'
         $detail = 'Clique em Hostear servidor para abrir o mundo para o grupo.'
         if ($st.versaoMinecraft) {
-            $kindName = if ($st.tipoServidor -eq 'fabric') { 'Fabric (mods)' } else { 'Paper' }
+            $kindName = Get-TypeName $st.tipoServidor
+            if ($st.tipoServidor -ne 'paper') { $kindName += ' (mods)' }
             $detail += "`nServidor: $kindName, Minecraft $($st.versaoMinecraft). Memória neste PC: $($st.memoria)."
         }
         $primary = 'host'; $primaryText = 'Hostear servidor'
@@ -349,9 +357,10 @@ function Update-Ui {
     $script:OptionsBtn.IsEnabled = -not $busy
     $script:MenuDiscord.Header = if ($st -and $st.discord) { 'Avisos no Discord: ligados...' } else { 'Ligar avisos no Discord...' }
     $script:MenuTunnel.Header = if ($st -and $st.tunel) { 'Conexão por túnel: ligada...' } else { 'Conexão por túnel (sem Radmin)...' }
-    $isFabric = [bool]($st -and $st.tipoServidor -eq 'fabric')
-    $script:MenuAddons.Header = if ($isFabric) { 'Mods do servidor...' } else { 'Plugins do servidor...' }
-    $script:MenuClientMods.Visibility = if ($isFabric) { 'Visible' } else { 'Collapsed' }
+    $script:MenuDirect.Header = if ($st -and $st.direta) { 'Conexão direta: ligada...' } else { 'Conexão direta (porta no roteador)...' }
+    $isModded = [bool]($st -and $st.tipoServidor -and $st.tipoServidor -ne 'paper')
+    $script:MenuAddons.Header = if ($isModded) { 'Mods do servidor...' } else { 'Plugins do servidor...' }
+    $script:MenuClientMods.Visibility = if ($isModded) { 'Visible' } else { 'Collapsed' }
     if ($st -and $st.versaoNova) {
         $script:MenuUpdate.Header = "Atualizar o programa para a versão $($st.versaoNova)..."
         $script:MenuUpdate.Visibility = 'Visible'
@@ -479,6 +488,9 @@ function Receive-Line($line) {
                 $script:Status = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
                 $script:StatusFailed = $false
             }
+            'PACK' {
+                $script:Pack = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
+            }
             'VERSIONS' {
                 $script:Versions = ($parts[1..($parts.Count - 1)] -join '@@') | ConvertFrom-Json
             }
@@ -487,7 +499,7 @@ function Receive-Line($line) {
             }
             'STATE' {
                 $script:Phase = $parts[1]
-                if ($parts[1] -eq 'running') { $script:Address = $parts[2] }
+                if ($parts[1] -eq 'running') { $script:Address = $parts[2]; $script:Reserve = [string]$parts[3] }
             }
             'ASK' {
                 $yes = Ask-User $parts[1] $parts[2]
@@ -558,6 +570,8 @@ function Complete-HostScript {
             Show-ServerDialog
         } elseif ($after -eq 'copymods') {
             Copy-GroupMods
+        } elseif ($after -eq 'pack' -and $script:Pack) {
+            Show-PackDialog
         }
     } else {
         Add-Log ''
@@ -662,6 +676,15 @@ function Show-DiscordDialog {
     Start-Maintenance 'Configurando os avisos do Discord...' 'Testando o link e gravando a configuração para o grupo todo.' "-SetWebhook `"$url`""
 }
 
+function Get-TypeName($type) {
+    switch ($type) {
+        'fabric'   { return 'Fabric' }
+        'neoforge' { return 'NeoForge' }
+        'forge'    { return 'Forge' }
+        default    { return 'Paper' }
+    }
+}
+
 # Monta uma janela de dialogo a partir de XAML, ja com dono e icone.
 function New-Dialog([string]$xamlText) {
     [xml]$doc = $xamlText
@@ -685,12 +708,13 @@ function Update-AddonsList {
 }
 
 function Show-AddonsDialog {
-    $isFabric = [bool]($script:Status -and $script:Status.tipoServidor -eq 'fabric')
+    $isFabric = [bool]($script:Status -and $script:Status.tipoServidor -and $script:Status.tipoServidor -ne 'paper')   # servidor com mods
+    $loaderName = Get-TypeName $script:Status.tipoServidor
     $folderName = if ($isFabric) { 'mods' } else { 'plugins' }
     $word = if ($isFabric) { 'mods' } else { 'plugins' }
     $folder = Join-Path $Root "server\$folderName"
     $hint = if ($isFabric) {
-        'Arquivos .jar de mods para Fabric, na mesma versão do Minecraft do servidor. Quem joga precisa dos mesmos mods no próprio Minecraft (Opções > Mods para jogar neste PC).'
+        "Arquivos .jar de mods para $loaderName, na mesma versão do Minecraft do servidor. Quem joga precisa dos mesmos mods no próprio Minecraft (Opções > Mods para jogar neste PC)."
     } else {
         'Arquivos .jar de plugins para Paper/Spigot/Bukkit. Eles rodam só no servidor: quem joga não precisa instalar nada.'
     }
@@ -773,13 +797,107 @@ function Show-AddonsDialog {
     Start-Maintenance "Enviando os $word..." 'Gravando a mudança para o grupo todo.' "-SaveChanges `"$message`""
 }
 
+# ---- importar modpack
+
+function Show-PackDialog {
+    $pack = $script:Pack
+    if ($pack.formato -eq 'cliente-curseforge') {
+        [Windows.MessageBox]::Show($Window,
+            "Esse é o pacote do CurseForge para o jogo: ele só tem a lista dos mods, não os mods.`n`nNa página do modpack, na aba Files, baixe o arquivo marcado como Server Pack e importe esse.",
+            'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+        return
+    }
+    if ($pack.formato -eq 'desconhecido') {
+        [Windows.MessageBox]::Show($Window,
+            'Não achei mods dentro desse arquivo. Ele precisa ser um Server Pack (.zip com a pasta mods) ou um .mrpack do Modrinth.',
+            'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+        return
+    }
+    if ($pack.tipo -eq 'quilt') {
+        [Windows.MessageBox]::Show($Window, 'Esse modpack é para Quilt, que o programa ainda não suporta.', 'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
+        return
+    }
+    $currentIsPaper = (-not $script:Status.tipoServidor) -or ($script:Status.tipoServidor -eq 'paper')
+    $dialog = New-Dialog @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Importar modpack" Width="600" SizeToContent="Height" ResizeMode="NoResize"
+        Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
+  <StackPanel Margin="22">
+    <TextBlock Name="NameText" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
+    <TextBlock Name="SummaryText" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,4,0,16"/>
+    <TextBlock Text="Confira o que o programa deduziu do arquivo. Os valores certos estão na página do modpack."
+               TextWrapping="Wrap" Foreground="#9DA7B3" FontSize="12.5" Margin="0,0,0,10"/>
+    <Grid>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="220"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <TextBlock Grid.Row="0" Text="Carregador de mods" VerticalAlignment="Center"/>
+      <ComboBox Name="TypeBox" Grid.Row="0" Grid.Column="1" Padding="8,6" Margin="0,0,0,10"/>
+      <TextBlock Grid.Row="1" Text="Versão do Minecraft" VerticalAlignment="Center"/>
+      <TextBox Name="McBox" Grid.Row="1" Grid.Column="1" Background="#0D1117" Foreground="#E6EDF3" CaretBrush="#E6EDF3" BorderBrush="#30363D" Padding="8,6" Margin="0,0,0,10"/>
+      <TextBlock Grid.Row="2" Text="Versão do carregador" VerticalAlignment="Center"/>
+      <TextBox Name="LoaderBox" Grid.Row="2" Grid.Column="1" Background="#0D1117" Foreground="#E6EDF3" CaretBrush="#E6EDF3" BorderBrush="#30363D" Padding="8,6" Margin="0,0,0,4"
+               ToolTip="Em branco usa a versão mais recente para esse Minecraft"/>
+    </Grid>
+    <CheckBox Name="WorldCheck" Content="Começar um mundo novo" Foreground="#E6EDF3" Margin="0,14,0,0"/>
+    <TextBlock Name="WorldText" TextWrapping="Wrap" Foreground="#D29922" FontSize="12.5" Margin="0,6,0,18"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button Name="CancelBtn" Content="Cancelar" Padding="16,9" Margin="0,0,10,0" IsCancel="True"/>
+      <Button Name="SaveBtn" Content="Importar" Padding="22,9" IsDefault="True"/>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+    $dialog.FindName('NameText').Text = [string]$pack.nome
+    $kind = if ($pack.formato -eq 'mrpack') { 'Pacote do Modrinth (.mrpack)' } else { 'Server Pack (.zip)' }
+    $dialog.FindName('SummaryText').Text = "$kind com $($pack.mods) mods. Os mods que estão hoje no servidor serão trocados pelos do modpack. Quem joga precisa instalar o mesmo modpack no próprio Minecraft (pelo aplicativo do CurseForge ou do Modrinth)."
+    $typeBox = $dialog.FindName('TypeBox')
+    $types = 'fabric', 'neoforge', 'forge'
+    foreach ($type in $types) { [void]$typeBox.Items.Add((Get-TypeName $type)) }
+    $typeBox.SelectedIndex = [Math]::Max(0, [array]::IndexOf($types, [string]$pack.tipo))
+    $mcBox = $dialog.FindName('McBox'); $mcBox.Text = [string]$pack.mc
+    $loaderBox = $dialog.FindName('LoaderBox'); $loaderBox.Text = [string]$pack.loader
+    $worldCheck = $dialog.FindName('WorldCheck')
+    $worldText = $dialog.FindName('WorldText')
+    if ($currentIsPaper) {
+        $worldCheck.IsChecked = $true
+        $worldCheck.IsEnabled = $false
+        $worldText.Text = 'O servidor atual é Paper, que guarda o mundo de outro jeito: o modpack começa um mundo novo. O mundo atual continua guardado nos saves.'
+    } else {
+        $worldCheck.IsChecked = $true
+        $worldText.Text = 'Recomendado ao trocar de modpack: um mundo criado com outros mods costuma quebrar. Desmarque só se o modpack for uma atualização do que já está no servidor. O mundo atual continua guardado nos saves.'
+    }
+    $dialog.FindName('SaveBtn').Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
+    if (-not $dialog.ShowDialog()) { return }
+
+    $type = $types[$typeBox.SelectedIndex]
+    $mc = $mcBox.Text.Trim()
+    $loader = $loaderBox.Text.Trim()
+    if ($mc -notmatch '^\d+(\.\d+){1,2}$') {
+        [Windows.MessageBox]::Show($Window, 'Preencha a versão do Minecraft do modpack, por exemplo 1.20.1 ou 26.3.', 'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+        return
+    }
+    if ($loader -and $loader -notmatch '^[\w.+-]+$') {
+        [Windows.MessageBox]::Show($Window, 'A versão do carregador tem caracteres inválidos.', 'Minecraft Compartilhado', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $argument = "$($script:PackPath)|$type|$mc|$loader"
+    if ($worldCheck.IsChecked) { $argument += '|mundo-novo' }
+    Start-Maintenance 'Importando o modpack...' "Copiando os arquivos de $($pack.nome) e enviando para o grupo. Pode levar alguns minutos." "-ImportPack `"$argument`""
+}
+
 # ---- tipo de servidor e versao do Minecraft
 
 function Show-ServerDialog {
     $info = $script:Versions
     $dialog = New-Dialog @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Tipo de servidor e versão do Minecraft" Width="600" Height="560" MinWidth="460" MinHeight="420"
+        Title="Tipo de servidor e versão do Minecraft" Width="620" Height="620" MinWidth="480" MinHeight="480"
         Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
         FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
   <DockPanel Margin="18">
@@ -787,13 +905,17 @@ function Show-ServerDialog {
       <TextBlock Text="Tipo de servidor" FontWeight="SemiBold"/>
       <RadioButton Name="PaperRadio" GroupName="Kind" Foreground="#E6EDF3" Margin="0,8,0,0"
                    Content="Paper: aceita plugins. Quem joga usa o Minecraft normal, sem instalar nada."/>
-      <RadioButton Name="FabricRadio" GroupName="Kind" Foreground="#E6EDF3" Margin="0,6,0,16"
+      <RadioButton Name="FabricRadio" GroupName="Kind" Foreground="#E6EDF3" Margin="0,6,0,0"
                    Content="Fabric: aceita mods. Todos precisam do Fabric e dos mesmos mods no jogo."/>
+      <RadioButton Name="NeoForgeRadio" GroupName="Kind" Foreground="#E6EDF3" Margin="0,6,0,0"
+                   Content="NeoForge (experimental): aceita mods; o mais usado em modpacks recentes."/>
+      <RadioButton Name="ForgeRadio" GroupName="Kind" Foreground="#E6EDF3" Margin="0,6,0,16"
+                   Content="Forge (experimental): aceita mods; comum em modpacks de versões antigas."/>
       <TextBlock Text="Versão do Minecraft" FontWeight="SemiBold" Margin="0,0,0,6"/>
     </StackPanel>
     <StackPanel DockPanel.Dock="Bottom">
       <TextBlock TextWrapping="Wrap" Foreground="#D29922" FontSize="12.5" Margin="0,12,0,14"
-                 Text="Todos do grupo precisam jogar na mesma versão. Voltar para uma versão mais antiga pode estragar partes do mundo. Trocar entre Paper e Fabric começa um MUNDO NOVO, porque um não abre o mundo do outro; o mundo atual continua guardado nos saves."/>
+                 Text="Todos do grupo precisam jogar na mesma versão. Voltar para uma versão mais antiga pode estragar partes do mundo. Trocar entre Paper e um servidor com mods começa um MUNDO NOVO, porque um não abre o mundo do outro; o mundo atual continua guardado nos saves."/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button Name="CancelBtn" Content="Cancelar" Padding="16,9" Margin="0,0,10,0" IsCancel="True"/>
         <Button Name="SaveBtn" Content="Salvar" Padding="22,9" IsDefault="True"/>
@@ -806,7 +928,14 @@ function Show-ServerDialog {
     $paper = $dialog.FindName('PaperRadio')
     $fabric = $dialog.FindName('FabricRadio')
     $list = $dialog.FindName('VersionList')
-    if ($info.tipo -eq 'fabric') { $fabric.IsChecked = $true } else { $paper.IsChecked = $true }
+    $neoforge = $dialog.FindName('NeoForgeRadio')
+    $forge = $dialog.FindName('ForgeRadio')
+    switch ($info.tipo) {
+        'fabric'   { $fabric.IsChecked = $true }
+        'neoforge' { $neoforge.IsChecked = $true }
+        'forge'    { $forge.IsChecked = $true }
+        default    { $paper.IsChecked = $true }
+    }
     $versions = @($info.versoes)
     foreach ($version in $versions) {
         $label = "$($version.id)".PadRight(10) + "Java $($version.java)"
@@ -818,14 +947,15 @@ function Show-ServerDialog {
     if (-not $dialog.ShowDialog()) { return }
     if ($list.SelectedIndex -lt 0) { return }
 
-    $type = if ($fabric.IsChecked) { 'fabric' } else { 'paper' }
+    $type = 'paper'
+    if ($fabric.IsChecked) { $type = 'fabric' } elseif ($neoforge.IsChecked) { $type = 'neoforge' } elseif ($forge.IsChecked) { $type = 'forge' }
     $chosen = [string]$versions[$list.SelectedIndex].id
     if ($type -eq $info.tipo -and $chosen -eq $info.atual) { return }
-    $typeName = if ($type -eq 'fabric') { 'Fabric' } else { 'Paper' }
+    $typeName = Get-TypeName $type
     $question = "Mudar o servidor do grupo para $typeName, Minecraft $chosen?`n`nTodo mundo vai precisar jogar nessa versão."
     $argument = "$type|$chosen"
-    if ($type -ne $info.tipo) {
-        $question += "`n`nATENÇÃO: trocar entre Paper e Fabric começa um MUNDO NOVO. O mundo atual sai do servidor, mas continua guardado nos saves: para tê-lo de volta, volte para o tipo anterior e use Restaurar um save anterior."
+    if (($type -eq 'paper') -ne ($info.tipo -eq 'paper')) {
+        $question += "`n`nATENÇÃO: trocar entre Paper e um servidor com mods começa um MUNDO NOVO. O mundo atual sai do servidor, mas continua guardado nos saves: para tê-lo de volta, volte para o tipo anterior e use Restaurar um save anterior."
         $argument += '|mundo-novo'
     }
     $answer = [Windows.MessageBox]::Show($Window, $question, 'Minecraft Compartilhado', 'YesNo', 'Warning')
@@ -841,12 +971,17 @@ function Show-MemoryDialog {
     try { $totalGb = [Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB) } catch { }
     $dialog = New-Dialog @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Memória do servidor neste PC" Width="520" SizeToContent="Height" ResizeMode="NoResize"
+        Title="Ajustes deste PC" Width="540" SizeToContent="Height" ResizeMode="NoResize"
         Background="#161B22" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
         FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
   <StackPanel Margin="22">
-    <TextBlock Name="InfoText" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,0,0,14"/>
+    <TextBlock Text="Memória do servidor" FontWeight="SemiBold"/>
+    <TextBlock Name="InfoText" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,4,0,8"/>
     <ComboBox Name="MemoryBox" Padding="10,7" Margin="0,0,0,18"/>
+    <TextBlock Text="Fechar sozinho quando esvaziar" FontWeight="SemiBold"/>
+    <TextBlock TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,4,0,8"
+               Text="Se ninguém estiver online por esse tempo, o servidor salva o mundo, fecha e libera a vez para outra pessoa hostear. Enquanto o servidor está aberto, o programa já impede o PC de suspender por inatividade."/>
+    <ComboBox Name="CloseBox" Padding="10,7" Margin="0,0,0,18"/>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
       <Button Name="CancelBtn" Content="Cancelar" Padding="16,9" Margin="0,0,10,0" IsCancel="True"/>
       <Button Name="SaveBtn" Content="Salvar" Padding="22,9" IsDefault="True"/>
@@ -856,7 +991,7 @@ function Show-MemoryDialog {
 '@
     $ramText = if ($totalGb -gt 0) { "Este PC tem $totalGb GB de memória. " } else { '' }
     $dialog.FindName('InfoText').Text = $ramText + 'Quanto dela o servidor de Minecraft pode usar quando você hosteia. ' +
-        'Deixe pelo menos uns 4 GB livres para o Windows e para o seu próprio jogo. Este ajuste vale só para este PC.'
+        'Deixe pelo menos uns 4 GB livres para o Windows e para o seu próprio jogo. Os ajustes desta janela valem só para este PC.'
     $box = $dialog.FindName('MemoryBox')
     $groupDefault = [string]$st.memoriaGrupo
     $values = @('')   # '' = padrao do grupo
@@ -868,15 +1003,29 @@ function Show-MemoryDialog {
     }
     $localFile = Join-Path $Root '.runtime\local.json'
     $current = ''
-    if (Test-Path $localFile) { try { $current = [string](Get-Content $localFile -Raw | ConvertFrom-Json).memoria } catch { } }
+    $currentClose = 0
+    if (Test-Path $localFile) {
+        try {
+            $saved = Get-Content $localFile -Raw | ConvertFrom-Json
+            $current = [string]$saved.memoria
+            if ($saved.fecharVazioMinutos) { $currentClose = [int]$saved.fecharVazioMinutos }
+        } catch { }
+    }
     $box.SelectedIndex = [Math]::Max(0, [array]::IndexOf($values, $current))
+    $closeBox = $dialog.FindName('CloseBox')
+    $closeValues = 0, 10, 20, 30, 60, 120
+    [void]$closeBox.Items.Add('Nunca (eu mesmo fecho)')
+    foreach ($minutes in $closeValues | Select-Object -Skip 1) { [void]$closeBox.Items.Add("Depois de $minutes minutos vazio") }
+    $closeBox.SelectedIndex = [Math]::Max(0, [array]::IndexOf($closeValues, $currentClose))
     $dialog.FindName('SaveBtn').Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
     if (-not $dialog.ShowDialog()) { return }
 
-    $chosen = $values[$box.SelectedIndex]
-    if ($chosen) {
+    $settings = @{}
+    if ($values[$box.SelectedIndex]) { $settings.memoria = $values[$box.SelectedIndex] }
+    if ($closeValues[$closeBox.SelectedIndex] -gt 0) { $settings.fecharVazioMinutos = $closeValues[$closeBox.SelectedIndex] }
+    if ($settings.Count -gt 0) {
         New-Item -ItemType Directory -Force (Split-Path $localFile) | Out-Null
-        [IO.File]::WriteAllText($localFile, (@{ memoria = $chosen } | ConvertTo-Json) + "`n")
+        [IO.File]::WriteAllText($localFile, ($settings | ConvertTo-Json) + "`n")
     } else {
         Remove-Item $localFile -Force -ErrorAction SilentlyContinue
     }
@@ -942,9 +1091,9 @@ function Show-ClientModsDialog {
         FontFamily="Segoe UI" FontSize="14" Foreground="#E6EDF3">
   <StackPanel Margin="22">
     <TextBlock Name="IntroText" TextWrapping="Wrap" Margin="0,0,0,16"/>
-    <TextBlock Text="1. Instale o Fabric no seu Minecraft" FontWeight="SemiBold"/>
+    <TextBlock Name="LoaderTitle" FontWeight="SemiBold"/>
     <TextBlock Name="FabricText" TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,4,0,8"/>
-    <Button Name="FabricBtn" Content="Abrir o site do Fabric" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,18"/>
+    <Button Name="FabricBtn" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,18"/>
     <TextBlock Text="2. Copie os mods do grupo" FontWeight="SemiBold"/>
     <TextBlock TextWrapping="Wrap" Foreground="#9DA7B3" Margin="0,4,0,8"
                Text="Copia os mods do servidor para a pasta de mods do seu Minecraft. Repita sempre que o grupo mudar os mods. Mods que você colocou por conta própria não são apagados."/>
@@ -956,10 +1105,19 @@ function Show-ClientModsDialog {
   </StackPanel>
 </Window>
 '@
-    $dialog.FindName('IntroText').Text = "O servidor do grupo usa mods (Fabric, Minecraft $($st.versaoMinecraft)). Para entrar, o seu Minecraft precisa do Fabric e dos mesmos mods."
-    $dialog.FindName('FabricText').Text = "No site, baixe o instalador para Windows, abra-o e escolha a versão $($st.versaoMinecraft) do Minecraft. Ele cria um perfil 'fabric-loader' no launcher oficial; é com esse perfil que você joga."
+    $loaderName = Get-TypeName $st.tipoServidor
+    $loaderVersion = if ($st.versaoLoader) { " $($st.versaoLoader)" } else { '' }
+    $script:LoaderSite = switch ($st.tipoServidor) {
+        'neoforge' { 'https://neoforged.net/' }
+        'forge'    { 'https://files.minecraftforge.net/' }
+        default    { 'https://fabricmc.net/use/installer/' }
+    }
+    $dialog.FindName('IntroText').Text = "O servidor do grupo usa mods ($loaderName$loaderVersion, Minecraft $($st.versaoMinecraft)). Para entrar, o seu Minecraft precisa do $loaderName e dos mesmos mods. Se o grupo usa um modpack do CurseForge ou do Modrinth, o jeito mais fácil é instalar o mesmo modpack pelo aplicativo deles e pular os passos abaixo."
+    $dialog.FindName('LoaderTitle').Text = "1. Instale o $loaderName no seu Minecraft"
+    $dialog.FindName('FabricText').Text = "No site, baixe o instalador para Windows, abra-o e escolha a versão $($st.versaoMinecraft) do Minecraft (cliente)$(if ($loaderVersion) { ", $loaderName$loaderVersion" }). Ele cria um perfil no launcher oficial; é com esse perfil que você joga."
+    $dialog.FindName('FabricBtn').Content = "Abrir o site do $loaderName"
     $choice = @{ Action = $null }
-    $dialog.FindName('FabricBtn').Add_Click({ Start-Process 'https://fabricmc.net/use/installer/' })
+    $dialog.FindName('FabricBtn').Add_Click({ Start-Process $script:LoaderSite })
     $dialog.FindName('FolderBtn').Add_Click({
         $folder = Join-Path $Root 'server\mods'
         New-Item -ItemType Directory -Force $folder | Out-Null
@@ -1132,6 +1290,33 @@ $OptionsBtn.Add_Click({
 $MenuDiscord.Add_Click({ if (Test-CanMaintain) { Show-DiscordDialog } })
 $MenuTunnel.Add_Click({ if (Test-CanMaintain) { Show-TunnelDialog } })
 $MenuAddons.Add_Click({ if (Test-CanMaintain) { Show-AddonsDialog } })
+$MenuPack.Add_Click({
+    if (-not (Test-CanMaintain)) { return }
+    $picker = New-Object Microsoft.Win32.OpenFileDialog
+    $picker.Title = 'Escolha o modpack: Server Pack (.zip) ou .mrpack'
+    $picker.Filter = 'Modpacks (*.zip;*.mrpack)|*.zip;*.mrpack'
+    if (-not $picker.ShowDialog($Window)) { return }
+    if ($picker.FileName -match '["|]') { return }
+    $script:PackPath = $picker.FileName
+    $script:Pack = $null
+    $script:AfterSaves = 'pack'
+    Start-HostScript 'inspect' "-InspectPack `"$($script:PackPath)`""
+})
+$MenuDirect.Add_Click({
+    if (-not (Test-CanMaintain)) { return }
+    if ($script:Status.direta) {
+        $answer = [Windows.MessageBox]::Show($Window, 'A conexão direta está ligada para o grupo. Desligar?',
+            'Minecraft Compartilhado', 'YesNo', 'Question')
+        if ($answer -eq 'Yes') { Start-Maintenance 'Configurando a conexão direta...' 'Gravando a configuração para o grupo todo.' '-SetDirect off' }
+        return
+    }
+    $text = "Com a conexão direta, quem hosteia pede ao próprio roteador para abrir a porta do servidor, e os amigos conectam direto, sem Radmin e com o menor ping possível.`n`n" +
+            "Só funciona em parte das redes: o roteador precisa aceitar isso (UPnP) e a operadora não pode compartilhar o IP (CGNAT). Quando não dá, o programa avisa e segue pelo túnel ou pelo Radmin. Se o túnel estiver configurado, ele continua no ar como endereço reserva.`n`n" +
+            "Atenção: o endereço divulgado passa a ser o IP público da casa de quem está hosteando, e o servidor fica alcançável pela internet. Mantenha a whitelist ligada.`n`n" +
+            'Ligar a conexão direta para o grupo?'
+    $answer = [Windows.MessageBox]::Show($Window, $text, 'Minecraft Compartilhado', 'YesNo', 'Question')
+    if ($answer -eq 'Yes') { Start-Maintenance 'Configurando a conexão direta...' 'Gravando a configuração para o grupo todo.' '-SetDirect on' }
+})
 $MenuServer.Add_Click({
     if (Test-CanMaintain) { $script:AfterSaves = 'server'; $script:Versions = $null; Start-HostScript 'versions' '-ListVersions' }
 })

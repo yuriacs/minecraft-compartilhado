@@ -15,5 +15,11 @@ server/plugins/.paper-remapped/
 # Cache do servidor Fabric
 server/.fabric/
 
+# Gerados pelo instalador do Forge/NeoForge em cada PC
+server/run.bat
+server/run.sh
+server/user_jvm_args.txt
+server/*.log
+
 # Instalador gerado localmente
 dist/

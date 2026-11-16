@@ -1,10 +1,12 @@
 {
   "tipoServidor": "paper",
   "versaoMinecraft": "26.3",
+  "versaoLoader": "",
   "javaVersao": 25,
   "memoria": "4G",
   "backupMinutos": 20,
   "discordWebhook": "",
   "tunelChave": "",
-  "tunelEndereco": ""
+  "tunelEndereco": "",
+  "conexaoDireta": false
 }

@@ -22,7 +22,10 @@ param(
     [string]$SetServer,      # troca o tipo e a versao do servidor: "paper|26.3" ou "fabric|26.3"
     [string]$SaveChanges,    # envia o que mudou em server/ (plugins, mods), com esta mensagem
     [switch]$SyncOnly,       # so traz o estado mais recente do GitHub para este PC
-    [switch]$UpdateProgram   # atualiza os scripts do programa para a ultima versao publicada
+    [switch]$UpdateProgram,  # atualiza os scripts do programa para a ultima versao publicada
+    [string]$SetDirect,      # "on"/"off": liga ou desliga a conexao direta (porta no roteador)
+    [string]$InspectPack,    # examina um modpack (.zip de servidor ou .mrpack) e diz o que achou
+    [string]$ImportPack      # importa o modpack: "caminho|tipo|versao|loader[|mundo-novo]"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -151,6 +154,8 @@ function Write-Lock($since, $address) {
         endereco = $address
         sinalUtc = (Get-Date).ToUniversalTime().ToString($SignalFormat)
     }
+    # segundo endereco, para quando o primeiro (conexao direta) nao funcionar
+    if ($ReserveAddress) { $data.reserva = $ReserveAddress }
     [IO.File]::WriteAllText($LockPath, ($data | ConvertTo-Json) + "`n")
 }
 
@@ -191,10 +196,181 @@ function Get-RadminIp {
 # Endereco que os amigos usam para entrar: o do tunel, se estiver ligado, ou
 # o IP do Radmin deste PC. Vazio quando nao da para saber.
 function Get-JoinAddress {
+    if ($DirectAddress) { return $DirectAddress }
     if ($TunnelKey) { return $TunnelAddress }
     $ip = Get-RadminIp
     if ($ip) { return "${ip}:$(Get-ServerPort)" }
     return ''
+}
+
+# ---- conexao direta (porta aberta no roteador)
+#
+# Pede ao roteador deste PC, por UPnP, para encaminhar a porta do servidor.
+# Quando da certo os amigos conectam direto no IP publico do host, sem VPN e
+# sem passar por terceiros. Nao funciona se o roteador tiver o UPnP desligado
+# ou se a operadora compartilhar o IP entre varios clientes (CGNAT).
+$DirectAddress = ''    # "ip:porta" quando a porta foi aberta nesta sessao
+$DirectPort = 0
+$ReserveAddress = ''   # endereco alternativo gravado na trava
+
+# IPv4 que funciona de fora? (descarta redes internas e a faixa de CGNAT)
+function Test-PublicIp($text) {
+    $ip = $null
+    if (-not [Net.IPAddress]::TryParse([string]$text, [ref]$ip)) { return $false }
+    if ($ip.AddressFamily -ne 'InterNetwork') { return $false }
+    $b = $ip.GetAddressBytes()
+    if ($b[0] -eq 10 -or $b[0] -eq 127 -or $b[0] -eq 0) { return $false }
+    if ($b[0] -eq 192 -and $b[1] -eq 168) { return $false }
+    if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) { return $false }
+    if ($b[0] -eq 169 -and $b[1] -eq 254) { return $false }
+    if ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) { return $false }   # CGNAT
+    return $true
+}
+
+# IP deste PC na rede de casa: o da placa por onde sai a internet (nao o de
+# VPNs como o Radmin, que tambem tem "gateway").
+function Get-LanIp {
+    $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+        Sort-Object { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).InterfaceMetric } |
+        Select-Object -First 1
+    if (-not $route) { return $null }
+    return (Get-NetIPAddress -InterfaceIndex $route.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
+}
+
+# Acha o roteador pela rede local (busca SSDP) e devolve por onde mandar os
+# pedidos de porta: @{ Url; Service }. $null se nenhum roteador responder.
+# Falamos com o roteador direto, sem a API de UPnP do Windows, porque ela nao
+# funciona quando a rede esta marcada como "Publica".
+function Find-RouterControl($localIp) {
+    $locations = @()
+    if ($env:MC_TESTE_UPNP) {
+        $locations = @($env:MC_TESTE_UPNP)   # so para os testes: endereco de um roteador simulado
+    } else {
+        $udp = New-Object Net.Sockets.UdpClient ([Net.IPEndPoint]::new([Net.IPAddress]::Parse($localIp), 0))
+        try {
+            $udp.Client.ReceiveTimeout = 2500
+            foreach ($target in 'urn:schemas-upnp-org:device:InternetGatewayDevice:1', 'urn:schemas-upnp-org:service:WANIPConnection:1', 'urn:schemas-upnp-org:service:WANPPPConnection:1') {
+                $bytes = [Text.Encoding]::ASCII.GetBytes("M-SEARCH * HTTP/1.1`r`nHOST: 239.255.255.250:1900`r`nMAN: `"ssdp:discover`"`r`nMX: 2`r`nST: $target`r`n`r`n")
+                [void]$udp.Send($bytes, $bytes.Length, '239.255.255.250', 1900)
+            }
+            $deadline = (Get-Date).AddSeconds(4)
+            while ((Get-Date) -lt $deadline) {
+                try {
+                    $remote = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
+                    $answer = [Text.Encoding]::ASCII.GetString($udp.Receive([ref]$remote))
+                    if ($answer -match '(?im)^LOCATION:\s*(\S+)') { $locations += $Matches[1] }
+                } catch { break }
+            }
+        } finally { $udp.Close() }
+    }
+    foreach ($location in ($locations | Select-Object -Unique)) {
+        try {
+            $xml = [string](Invoke-WebRequest -Uri $location -UseBasicParsing -TimeoutSec 6).Content
+            foreach ($block in [regex]::Matches($xml, '(?s)<service>.*?</service>')) {
+                if ($block.Value -match '<serviceType>\s*(urn:schemas-upnp-org:service:WAN(?:IP|PPP)Connection:\d)\s*</serviceType>') {
+                    $service = $Matches[1]
+                    if ($block.Value -match '<controlURL>\s*([^<\s]+)\s*</controlURL>') {
+                        $url = [Uri]::new([Uri]$location, $Matches[1]).AbsoluteUri
+                        return @{ Url = $url; Service = $service }
+                    }
+                }
+            }
+        } catch { }
+    }
+    return $null
+}
+
+# Manda um pedido ao roteador (SOAP) e devolve a resposta em texto.
+function Invoke-RouterAction($control, $action, $arguments) {
+    $body = '<?xml version="1.0"?>' +
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
+        "<s:Body><u:$action xmlns:u=`"$($control.Service)`">$arguments</u:$action></s:Body></s:Envelope>"
+    $headers = @{ SOAPAction = "`"$($control.Service)#$action`"" }
+    $response = Invoke-WebRequest -Uri $control.Url -Method Post -Body $body -ContentType 'text/xml; charset="utf-8"' -Headers $headers -UseBasicParsing -TimeoutSec 8
+    return [string]$response.Content
+}
+
+$RouterControl = $null   # roteador em que esta sessao abriu a porta
+
+function Open-DirectConnection {
+    $script:DirectAddress = ''
+    $script:ReserveAddress = ''
+    if (-not $DirectEnabled) { return }
+    Say 'Tentando a conexao direta (abrir a porta no roteador)...'
+    $reason = ''
+    try {
+        $port = [int](Get-ServerPort)
+        $localIp = Get-LanIp
+        if (-not $localIp) { throw 'Nao achei o endereco deste PC na rede local.' }
+        $control = Find-RouterControl $localIp
+        if (-not $control) { throw 'O roteador nao respondeu: ele nao aceita abrir portas automaticamente (UPnP desligado ou nao suportado).' }
+
+        $mapping = "<NewRemoteHost></NewRemoteHost><NewExternalPort>$port</NewExternalPort><NewProtocol>TCP</NewProtocol>" +
+            "<NewInternalPort>$port</NewInternalPort><NewInternalClient>$localIp</NewInternalClient><NewEnabled>1</NewEnabled>" +
+            '<NewPortMappingDescription>Minecraft Compartilhado</NewPortMappingDescription><NewLeaseDuration>0</NewLeaseDuration>'
+        Invoke-RouterAction $control 'AddPortMapping' $mapping | Out-Null
+        $script:RouterControl = $control
+        $script:DirectPort = $port
+
+        $external = ''
+        if ((Invoke-RouterAction $control 'GetExternalIPAddress' '') -match '<NewExternalIPAddress>\s*([^<\s]*)\s*</NewExternalIPAddress>') { $external = $Matches[1] }
+        if (-not (Test-PublicIp $external)) {
+            throw "O roteador abriu a porta, mas o IP dele ($external) nao e alcancavel de fora: a operadora compartilha o IP entre varios clientes (CGNAT)."
+        }
+        $script:DirectAddress = $external
+        if ($port -ne 25565) { $script:DirectAddress = "${external}:$port" }
+        if ($TunnelKey -and $TunnelAddress) { $script:ReserveAddress = $TunnelAddress }
+        Out-Line "    Porta aberta no roteador. Endereco direto: $($script:DirectAddress)" 'Green'
+        return
+    } catch {
+        $reason = [string]$_.Exception.Message
+    }
+    Close-DirectConnection
+    Out-Line "    Sem conexao direta. $reason" 'Yellow'
+    if ($TunnelKey) {
+        Out-Line '    Sigo pelo tunel.' 'Yellow'
+    } else {
+        Out-Line '    Sigo pelo Radmin.' 'Yellow'
+    }
+}
+
+# Fecha a porta que esta sessao abriu no roteador.
+function Close-DirectConnection {
+    if (-not $script:DirectPort -or -not $script:RouterControl) { return }
+    try {
+        $mapping = "<NewRemoteHost></NewRemoteHost><NewExternalPort>$($script:DirectPort)</NewExternalPort><NewProtocol>TCP</NewProtocol>"
+        Invoke-RouterAction $script:RouterControl 'DeletePortMapping' $mapping | Out-Null
+    } catch { }
+    $script:DirectPort = 0
+    $script:RouterControl = $null
+}
+
+# ---- manter o PC acordado
+#
+# Se o PC de quem hosteia suspender, o servidor cai para todo mundo. Enquanto
+# o servidor esta aberto pedimos ao Windows para nao suspender por inatividade.
+function Set-KeepAwake($on) {
+    try {
+        if (-not ('McShared.Power' -as [type])) {
+            Add-Type -Namespace McShared -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);'
+        }
+        $flags = [uint32]2147483648          # ES_CONTINUOUS
+        if ($on) { $flags = [uint32]2147483649 }   # + ES_SYSTEM_REQUIRED
+        [void][McShared.Power]::SetThreadExecutionState($flags)
+    } catch { }
+}
+
+# Le o que o servidor escreveu no log desde a ultima leitura.
+function Read-LogSince($path, [ref]$offset) {
+    if (-not (Test-Path $path)) { return '' }
+    $stream = New-Object IO.FileStream($path, 'Open', 'Read', 'ReadWrite')
+    try {
+        if ($offset.Value -gt $stream.Length) { $offset.Value = 0 }   # o log foi trocado
+        $stream.Position = $offset.Value
+        $text = (New-Object IO.StreamReader($stream)).ReadToEnd()
+        $offset.Value = $stream.Length
+        return $text
+    } finally { $stream.Dispose() }
 }
 
 # ---- tunel (playit.gg)
@@ -315,6 +491,7 @@ function Show-Lock($lock) {
     Write-Host "    Host:   $($lock.host)"
     Write-Host "    Desde:  $($lock.desde)"
     if ($lock.endereco) { Write-Host "    Entrar: $($lock.endereco)" }
+    if ($lock.reserva) { Write-Host "    Se nao conectar, tente: $($lock.reserva)" }
     $age = Get-SignalAge $lock
     if ($null -ne $age) {
         if (Test-SignalStale $lock) {
@@ -511,7 +688,9 @@ function Get-Java($required) {
     }
 
     $system = Get-Command java -ErrorAction SilentlyContinue
-    if ($system -and (Get-JavaMajor $system.Source) -ge $required) { return $system.Source }
+    # so serve o Java do PC se for exatamente a versao pedida: servidores com
+    # mods antigos nao rodam em Java mais novo
+    if ($system -and (Get-JavaMajor $system.Source) -eq $required) { return $system.Source }
 
     Say "Java $required nao encontrado. Baixando uma copia portatil (so na primeira vez)..."
     New-Item -ItemType Directory -Force $RuntimeDir | Out-Null
@@ -558,16 +737,15 @@ function Get-JsonList($uri) {
 # Devolve o nome do .jar do servidor Fabric para a versao pedida, baixando se
 # faltar. E o "server launcher" oficial do Fabric: um .jar unico que baixa o
 # servidor da Mojang e carrega os mods da pasta server\mods.
-function Get-FabricJar($version) {
-    $existing = Get-ChildItem $ServerDir -Filter "fabric-server-$version-*.jar" -ErrorAction SilentlyContinue |
-        Select-Object -First 1
+function Get-FabricJar($version, $loader) {
+    $pattern = "fabric-server-$version-*.jar"
+    if ($loader) { $pattern = "fabric-server-$version-$loader.jar" }
+    $existing = Get-ChildItem $ServerDir -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($existing) { return $existing.Name }
 
     Say "Baixando o servidor Fabric $version (so na primeira vez)..."
     $meta = 'https://meta.fabricmc.net/v2/versions'
-    $loaders = @(Get-JsonList "$meta/loader/$version")
-    $loader = ($loaders | Where-Object { $_.loader.stable } | Select-Object -First 1).loader.version
-    if (-not $loader -and $loaders.Count -gt 0) { $loader = $loaders[0].loader.version }
+    if (-not $loader) { $loader = Resolve-LoaderVersion 'fabric' $version }
     if (-not $loader) { throw "O Fabric ainda nao tem versao para o Minecraft $version." }
     $installer = (@(Get-JsonList "$meta/installer") | Where-Object { $_.stable } | Select-Object -First 1).version
     if (-not $installer) { throw 'Nao consegui descobrir a versao do instalador do Fabric.' }
@@ -582,6 +760,263 @@ function Get-FabricJar($version) {
     Move-Item "$target.baixando" $target -Force
     Get-ChildItem $ServerDir -Filter 'fabric-server-*.jar' | Where-Object { $_.Name -ne $name } | Remove-Item -Force
     return $name
+}
+
+# ---- modpacks
+#
+# Dois formatos sao aceitos:
+#   - "Server Pack" (.zip), como os do CurseForge: um zip com a pasta mods e as
+#     configuracoes do servidor. Nao tem formato padrao, entao o tipo e a
+#     versao sao deduzidos do que houver dentro e a pessoa confere.
+#   - .mrpack do Modrinth: traz um indice com o endereco e o hash de cada mod,
+#     que e baixado direto do Modrinth.
+
+# So aceita caminhos relativos e que fiquem dentro da pasta de destino.
+function Test-SafeRelativePath($path) {
+    $clean = ([string]$path) -replace '\\', '/'
+    if (-not $clean -or $clean.StartsWith('/') -or $clean -match '^[A-Za-z]:' ) { return $false }
+    foreach ($part in ($clean -split '/')) { if ($part -eq '..') { return $false } }
+    return $true
+}
+
+# O que nao vem de um Server Pack: o que cada PC instala por conta propria e o
+# que e do grupo (mundo, propriedades, licenca).
+function Test-PackEntryWanted($relative) {
+    $lower = $relative.ToLower()
+    if ($lower -match '^(libraries|logs|crash-reports|world|\.git)(/|$)') { return $false }
+    if ($lower -notmatch '/') {
+        # arquivos soltos na raiz
+        if ($lower -match '\.(jar|bat|sh|ps1|cmd|command|log|exe)$') { return $false }
+        if ($lower -in 'eula.txt', 'server.properties', 'user_jvm_args.txt', 'variables.txt', 'ops.json', 'whitelist.json', 'banned-ips.json', 'banned-players.json', 'usercache.json') { return $false }
+    }
+    return $true
+}
+
+# Abre o modpack e descreve o que achou, sem alterar nada.
+function Get-PackInfo($path) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    if (-not (Test-Path $path)) { throw 'Nao achei esse arquivo.' }
+    $info = [ordered]@{ formato = 'desconhecido'; nome = [IO.Path]::GetFileNameWithoutExtension($path); tipo = ''; mc = ''; loader = ''; mods = 0; raiz = ''; mb = [Math]::Round((Get-Item $path).Length / 1MB) }
+    $zip = [IO.Compression.ZipFile]::OpenRead($path)
+    try {
+        $names = @($zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' })
+        $index = $zip.Entries | Where-Object { $_.FullName -eq 'modrinth.index.json' } | Select-Object -First 1
+        if ($index) {
+            $reader = New-Object IO.StreamReader($index.Open())
+            $data = $reader.ReadToEnd() | ConvertFrom-Json
+            $reader.Dispose()
+            $info.formato = 'mrpack'
+            if ($data.name) { $info.nome = [string]$data.name }
+            $info.mc = [string]$data.dependencies.minecraft
+            foreach ($pair in @(@('fabric-loader', 'fabric'), @('neoforge', 'neoforge'), @('forge', 'forge'), @('quilt-loader', 'quilt'))) {
+                $value = $data.dependencies.($pair[0])
+                if ($value) { $info.tipo = $pair[1]; $info.loader = [string]$value }
+            }
+            $info.mods = @($data.files | Where-Object { $_.path -like 'mods/*' -and $_.env.server -ne 'unsupported' }).Count
+            return $info
+        }
+
+        # Server Pack: a raiz e a pasta (talvez nenhuma) onde esta "mods/"
+        $modEntry = $names | Where-Object { $_ -match '(^|/)mods/[^/]+\.jar$' } | Sort-Object Length | Select-Object -First 1
+        if (-not $modEntry) {
+            if ($names -contains 'manifest.json') { $info.formato = 'cliente-curseforge' }
+            return $info
+        }
+        $root = $modEntry.Substring(0, $modEntry.LastIndexOf('mods/'))
+        $info.formato = 'servidor'
+        $info.raiz = $root
+        $info.mods = @($names | Where-Object { $_.StartsWith($root + 'mods/') -and $_ -match '\.jar$' }).Count
+        $rootFiles = @($names | Where-Object { $_.StartsWith($root) -and ($_.Substring($root.Length) -notmatch '/') } | ForEach-Object { $_.Substring($root.Length) })
+
+        # pistas sobre o carregador de mods e a versao
+        foreach ($file in $rootFiles) {
+            if ($file -match '^neoforge-([\w.+-]+?)-installer\.jar$') { $info.tipo = 'neoforge'; $info.loader = $Matches[1] }
+            elseif ($file -match '^forge-(\d+(?:\.\d+){1,2})-([\w.+-]+?)(?:-installer|-shim|-universal)?\.jar$') { $info.tipo = 'forge'; $info.mc = $Matches[1]; $info.loader = $Matches[2] }
+            elseif ($file -match '^fabric-server') { if (-not $info.tipo) { $info.tipo = 'fabric' } }
+        }
+        $variables = $zip.Entries | Where-Object { ($_.FullName -replace '\\', '/') -eq ($root + 'variables.txt') } | Select-Object -First 1
+        if ($variables) {
+            $reader = New-Object IO.StreamReader($variables.Open())
+            $text = $reader.ReadToEnd()
+            $reader.Dispose()
+            if ($text -match '(?im)^\s*MINECRAFT_VERSION\s*=\s*"?([\d.]+)') { $info.mc = $Matches[1] }
+            if ($text -match '(?im)^\s*MODLOADER\s*=\s*"?(\w+)') {
+                $loaderName = $Matches[1].ToLower()
+                if ($loaderName -in 'fabric', 'forge', 'neoforge') { $info.tipo = $loaderName }
+            }
+            if ($text -match '(?im)^\s*MODLOADER_VERSION\s*=\s*"?([\w.+-]+)') { $info.loader = $Matches[1] }
+        }
+        if ($info.tipo -eq 'neoforge' -and -not $info.mc -and $info.loader -match '^(\d+)\.(\d+)\.') {
+            # NeoForge 21.1.x e do Minecraft 1.21.1; 26.3.0.x e do 26.3
+            if ([int]$Matches[1] -lt 26) { $info.mc = "1.$($Matches[1]).$($Matches[2])" -replace '\.0$', '' }
+        }
+        return $info
+    } finally { $zip.Dispose() }
+}
+
+# Copia o conteudo do modpack para a pasta server. Devolve quantos arquivos pos.
+function Copy-PackFiles($path, $info) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $count = 0
+    # os mods antigos saem todos: misturar dois pacotes quebra o servidor
+    $modsDir = Join-Path $ServerDir 'mods'
+    if (Test-Path $modsDir) { Get-ChildItem $modsDir -Filter '*.jar' -File | Remove-Item -Force }
+
+    $zip = [IO.Compression.ZipFile]::OpenRead($path)
+    try {
+        if ($info.formato -eq 'mrpack') {
+            $index = $zip.Entries | Where-Object { $_.FullName -eq 'modrinth.index.json' } | Select-Object -First 1
+            $reader = New-Object IO.StreamReader($index.Open())
+            $data = $reader.ReadToEnd() | ConvertFrom-Json
+            $reader.Dispose()
+            $files = @($data.files | Where-Object { $_.env.server -ne 'unsupported' })
+            $done = 0
+            foreach ($file in $files) {
+                if (-not (Test-SafeRelativePath $file.path)) { throw "O modpack tem um caminho invalido: $($file.path)" }
+                $url = [string](@($file.downloads)[0])
+                # so os servidores que o formato .mrpack permite
+                if ($url -notmatch '^https://(cdn\.modrinth\.com|github\.com|raw\.githubusercontent\.com|gitlab\.com)/') {
+                    throw "O modpack aponta para um endereco nao permitido: $url"
+                }
+                $target = Join-Path $ServerDir ($file.path -replace '/', '\')
+                New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+                Invoke-WebRequest -Uri $url -OutFile $target -UseBasicParsing -UserAgent $UserAgent
+                if ($file.hashes.sha1 -and (Get-FileHash $target -Algorithm SHA1).Hash -ne ([string]$file.hashes.sha1).ToUpper()) {
+                    Remove-Item $target -Force
+                    throw "O arquivo $($file.path) veio diferente do esperado."
+                }
+                $count++
+                $done++
+                if ($done % 20 -eq 0) { Out-Line "    $done de $($files.Count) arquivos baixados..." }
+            }
+            $prefixes = 'overrides/', 'server-overrides/'
+        } else {
+            $prefixes = @($info.raiz)
+        }
+
+        foreach ($prefix in $prefixes) {
+            foreach ($entry in $zip.Entries) {
+                $name = $entry.FullName -replace '\\', '/'
+                if ($name.EndsWith('/')) { continue }
+                if ($prefix -and -not $name.StartsWith($prefix)) { continue }
+                $relative = $name.Substring($prefix.Length)
+                if (-not $relative -or -not (Test-SafeRelativePath $relative)) { continue }
+                if ($info.formato -ne 'mrpack' -and -not (Test-PackEntryWanted $relative)) { continue }
+                if ($info.formato -eq 'mrpack' -and $relative -eq 'modrinth.index.json') { continue }
+                $target = Join-Path $ServerDir ($relative -replace '/', '\')
+                New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+                $count++
+            }
+        }
+    } finally { $zip.Dispose() }
+    return $count
+}
+
+function Get-TypeLabel($type) {
+    switch ($type) {
+        'fabric'   { return 'Fabric' }
+        'neoforge' { return 'NeoForge' }
+        'forge'    { return 'Forge' }
+        default    { return 'Paper' }
+    }
+}
+
+# Versao mais recente do carregador de mods para uma versao do Minecraft
+# ('' se nao existir). Ela e gravada no config.json, para todos os hosts do
+# grupo instalarem exatamente a mesma.
+function Resolve-LoaderVersion($type, $mc) {
+    try {
+        if ($type -eq 'fabric') {
+            $loaders = @(Get-JsonList "https://meta.fabricmc.net/v2/versions/loader/$mc")
+            $stable = ($loaders | Where-Object { $_.loader.stable } | Select-Object -First 1).loader.version
+            if ($stable) { return [string]$stable }
+            if ($loaders.Count -gt 0) { return [string]$loaders[0].loader.version }
+        } elseif ($type -eq 'neoforge') {
+            # 1.21.1 -> "21.1.x"; 1.21 -> "21.0.x"; 26.3 -> "26.3.0.x"; 26.1.2 -> "26.1.2.x"
+            if ($mc -match '^1\.(\d+)(?:\.(\d+))?$') {
+                $minor = '0'
+                if ($Matches[2]) { $minor = $Matches[2] }
+                $prefix = "$($Matches[1]).$minor."
+            } elseif (($mc -split '\.').Count -eq 2) {
+                $prefix = "$mc.0."
+            } else {
+                $prefix = "$mc."
+            }
+            $all = @((Invoke-RestMethod -Uri 'https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge' -UserAgent $UserAgent -TimeoutSec 20).versions)
+            $matching = @($all | Where-Object { $_.StartsWith($prefix) })
+            $stable = @($matching | Where-Object { $_ -notmatch '-' })
+            if ($stable.Count -gt 0) { return [string]$stable[-1] }
+            if ($matching.Count -gt 0) { return [string]$matching[-1] }
+        } elseif ($type -eq 'forge') {
+            $promos = (Invoke-RestMethod -Uri 'https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json' -UserAgent $UserAgent -TimeoutSec 20).promos
+            $version = $promos."$mc-recommended"
+            if (-not $version) { $version = $promos."$mc-latest" }
+            if ($version) { return [string]$version }
+        }
+    } catch { }
+    return ''
+}
+
+# Como iniciar um servidor Forge/NeoForge ja instalado na pasta server
+# ('' se ainda nao foi instalado).
+function Get-ModdedArgs($type, $mc, $loader) {
+    if ($type -eq 'neoforge') {
+        if (Test-Path (Join-Path $ServerDir "libraries\net\neoforged\neoforge\$loader\win_args.txt")) {
+            return "@libraries/net/neoforged/neoforge/$loader/win_args.txt nogui"
+        }
+        return ''
+    }
+    $full = "$mc-$loader"
+    if (Test-Path (Join-Path $ServerDir "libraries\net\minecraftforge\forge\$full\win_args.txt")) {
+        return "@libraries/net/minecraftforge/forge/$full/win_args.txt nogui"
+    }
+    foreach ($jar in "forge-$full-shim.jar", "forge-$full.jar", "forge-$full-universal.jar") {
+        if (Test-Path (Join-Path $ServerDir $jar)) { return "-jar `"$jar`" nogui" }
+    }
+    return ''
+}
+
+# Garante o servidor Forge/NeoForge instalado e devolve como inicia-lo. A
+# instalacao roda o instalador oficial dentro da pasta server; o que ele baixa
+# (libraries, .jar) fica fora do repositorio e cada PC instala o seu.
+function Install-ModdedServer($type, $mc, $loader, $java) {
+    $label = Get-TypeLabel $type
+    if (-not $loader) { $loader = Resolve-LoaderVersion $type $mc }
+    if (-not $loader) { throw "O $label nao tem versao para o Minecraft $mc." }
+    $arguments = Get-ModdedArgs $type $mc $loader
+    if ($arguments) { return $arguments }
+
+    if ($type -eq 'neoforge') {
+        $name = "neoforge-$loader-installer.jar"
+        $url = "https://maven.neoforged.net/releases/net/neoforged/neoforge/$loader/$name"
+    } else {
+        $name = "forge-$mc-$loader-installer.jar"
+        $url = "https://maven.minecraftforge.net/net/minecraftforge/forge/$mc-$loader/$name"
+    }
+    $folder = Join-Path $RuntimeDir 'instaladores'
+    New-Item -ItemType Directory -Force $folder | Out-Null
+    $installer = Join-Path $folder $name
+    if (-not (Test-Path $installer)) {
+        Say "Baixando o instalador do $label $loader..."
+        Invoke-WebRequest -Uri $url -OutFile "$installer.baixando" -UseBasicParsing -UserAgent $UserAgent
+        Move-Item "$installer.baixando" $installer -Force
+    }
+    Say "Instalando o servidor $label (so na primeira vez neste PC; leva alguns minutos)..."
+    # as duas grafias da opcao existem conforme a versao do instalador
+    foreach ($option in '--installServer', '--install-server') {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $java
+        $psi.Arguments = "-jar `"$installer`" $option"
+        $psi.WorkingDirectory = $ServerDir
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true   # entrada propria: nao pode herdar a deste script
+        $process = [System.Diagnostics.Process]::Start($psi)
+        if (-not $process.WaitForExit(20 * 60 * 1000)) { $process.Kill() }
+        $arguments = Get-ModdedArgs $type $mc $loader
+        if ($arguments) { return $arguments }
+    }
+    throw "A instalacao do servidor $label nao terminou. Veja as mensagens acima."
 }
 
 # Versao minima do Java que a Mojang exige para uma versao do Minecraft
@@ -654,20 +1089,26 @@ $TunnelAddress = ([string]$Config.tunelEndereco).Trim()
 $PlayitVersion = '2.0.2'   # versao do agente oficial baixada do GitHub do playit
 if ($Config.playitVersao) { $PlayitVersion = [string]$Config.playitVersao }
 
-# Tipo de servidor: "paper" (aceita plugins) ou "fabric" (aceita mods).
+# Tipo de servidor: "paper" (aceita plugins) ou, com mods, "fabric",
+# "neoforge" ou "forge".
+$ServerTypes = 'paper', 'fabric', 'neoforge', 'forge'
 $ServerType = ([string]$Config.tipoServidor).Trim().ToLower()
-if ($ServerType -notin 'paper', 'fabric') { $ServerType = 'paper' }
+if ($ServerType -notin $ServerTypes) { $ServerType = 'paper' }
+$LoaderVersion = ([string]$Config.versaoLoader).Trim()   # versao do carregador de mods ('' no Paper)
 
 # Memoria do servidor: cada PC pode ter a sua (arquivo local, fora do
 # repositorio); sem isso vale a do grupo, no config.json.
 $LocalConfigPath = Join-Path $RuntimeDir 'local.json'
 $Memory = [string]$Config.memoria
+$AutoCloseMinutes = 0   # fecha sozinho depois de tantos minutos sem ninguem online (0 = nunca)
 if (Test-Path $LocalConfigPath) {
     try {
         $localConfig = Get-Content $LocalConfigPath -Raw | ConvertFrom-Json
         if ($localConfig.memoria -match '^\d+[MG]$') { $Memory = [string]$localConfig.memoria }
+        if ($localConfig.fecharVazioMinutos) { $AutoCloseMinutes = [int]$localConfig.fecharVazioMinutos }
     } catch { }
 }
+$DirectEnabled = [bool]$Config.conexaoDireta   # tenta abrir a porta no roteador ao hostear
 
 # De onde vem o programa. Quem fizer um fork e publicar as proprias versoes troca aqui.
 $ProgramRepo = 'yuriacs/minecraft-compartilhado'
@@ -737,9 +1178,12 @@ if ($Status) {
             tunel       = [bool]$TunnelKey
             tunelEndereco = $TunnelAddress
             tipoServidor = $ServerType
+            versaoLoader = $LoaderVersion
             versaoMinecraft = [string]$Config.versaoMinecraft
             memoria     = $Memory
             memoriaGrupo = [string]$Config.memoria
+            fecharVazio = $AutoCloseMinutes
+            direta      = $DirectEnabled
             versao      = $ProgramVersion
             versaoNova  = (Get-NewerProgramVersion)
         }
@@ -852,33 +1296,40 @@ if ($PSBoundParameters.ContainsKey('SetServer')) {
     $parts = $SetServer.Trim() -split '\|'
     $type = ([string]$parts[0]).ToLower()
     $mc = [string]$parts[1]
-    if ($type -notin 'paper', 'fabric') { Fail 'Tipo de servidor invalido. Use paper ou fabric.' }
+    if ($type -notin $ServerTypes) { Fail 'Tipo de servidor invalido. Use paper, fabric, neoforge ou forge.' }
     if ($mc -notmatch '^\d+(\.\d+){1,2}$') { Fail 'Versao do Minecraft invalida.' }
+    $label = Get-TypeLabel $type
     Assert-ServerIdle 'trocar o servidor'
 
-    Say "Conferindo se existe $type para o Minecraft $mc..."
+    Say "Conferindo se existe $label para o Minecraft $mc..."
     $javaMin = Get-JavaMinimum $mc
     if ($type -eq 'paper' -and -not $javaMin) { Fail "O Paper nao tem a versao $mc." }
-    if ($type -eq 'fabric') {
-        $loaders = @()
-        try { $loaders = @(Get-JsonList "https://meta.fabricmc.net/v2/versions/loader/$mc") } catch { }
-        if ($loaders.Count -eq 0) { Fail "O Fabric nao tem versao para o Minecraft $mc." }
+    # A versao do carregador de mods fica fixada no config.json. Um modpack
+    # pode pedir uma versao especifica (quarto campo); senao vale a mais recente.
+    $loaderPin = ''
+    if ($type -ne 'paper') {
+        $loaderPin = ([string]$parts[3]).Trim()
+        if ($loaderPin -and $loaderPin -notmatch '^[\w.+-]+$') { Fail 'Versao do carregador de mods invalida.' }
+        if (-not $loaderPin) { $loaderPin = Resolve-LoaderVersion $type $mc }
+        if (-not $loaderPin) { Fail "O $label nao tem versao para o Minecraft $mc." }
     }
 
     $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json   # relido apos o merge
     $currentType = ([string]$Config.tipoServidor).Trim().ToLower()
-    if ($currentType -notin 'paper', 'fabric') { $currentType = 'paper' }
-    # O Paper e o Fabric guardam o mundo de formas diferentes: um nao abre o
-    # mundo criado pelo outro (o servidor trava ao iniciar). Por isso trocar de
-    # tipo so e aceito junto com "mundo-novo", que tira o mundo atual do
-    # servidor. Ele continua guardado nos saves.
+    if ($currentType -notin $ServerTypes) { $currentType = 'paper' }
+    # O Paper guarda o mundo de um jeito e os servidores com mods (Fabric,
+    # Forge, NeoForge) de outro: um lado nao abre o mundo do outro (o servidor
+    # trava ao iniciar). Por isso trocar entre Paper e mods so e aceito junto
+    # com "mundo-novo", que tira o mundo atual do servidor. Ele continua
+    # guardado nos saves.
     $worldFolders = @('world', 'world_nether', 'world_the_end') | Where-Object { Test-Path (Join-Path $ServerDir $_) }
     $newWorld = ([string]$parts[2]) -eq 'mundo-novo'
-    $resetWorld = ($type -ne $currentType) -and $worldFolders
+    $resetWorld = (($type -eq 'paper') -ne ($currentType -eq 'paper')) -and $worldFolders
     if ($resetWorld -and -not $newWorld) {
-        Fail 'Trocar entre Paper e Fabric exige comecar um mundo novo, porque um nao abre o mundo do outro. Pela interface (Opcoes) isso e feito com confirmacao.'
+        Fail 'Trocar entre Paper e um servidor com mods exige comecar um mundo novo, porque um nao abre o mundo do outro. Pela interface (Opcoes) isso e feito com confirmacao.'
     }
     $Config | Add-Member -NotePropertyName tipoServidor -NotePropertyValue $type -Force
+    $Config | Add-Member -NotePropertyName versaoLoader -NotePropertyValue $loaderPin -Force
     $Config | Add-Member -NotePropertyName versaoMinecraft -NotePropertyValue $mc -Force
     if ($javaMin) { $Config | Add-Member -NotePropertyName javaVersao -NotePropertyValue $javaMin -Force }
     [IO.File]::WriteAllText($ConfigPath, ($Config | ConvertTo-Json) + "`n")
@@ -895,8 +1346,6 @@ if ($PSBoundParameters.ContainsKey('SetServer')) {
         Say 'O servidor ja estava assim. Nada mudou.' 'Green'
         exit 0
     }
-    $label = 'Paper'
-    if ($type -eq 'fabric') { $label = 'Fabric' }
     Invoke-Git commit --quiet -m "Servidor: $label $mc$extra (por $Me)"
     if (-not (Push-WithRetry)) {
         Invoke-Git reset --hard --quiet 'HEAD~1'
@@ -906,6 +1355,91 @@ if ($PSBoundParameters.ContainsKey('SetServer')) {
     if ($resetWorld) { $notice += " O servidor vai come$([char]0xE7)ar um mundo novo; o anterior continua guardado nos saves." }
     Send-Discord $notice | Out-Null
     Say "Servidor configurado: $label $mc. O proximo host baixa o que faltar." 'Green'
+    if ($resetWorld) { Say 'Um mundo novo sera criado na proxima vez que o servidor abrir. O anterior continua guardado nos saves.' 'Yellow' }
+    exit 0
+}
+
+# ---------------------------------------------------------------- modpacks
+
+if ($PSBoundParameters.ContainsKey('InspectPack')) {
+    try { $info = Get-PackInfo $InspectPack.Trim('"') } catch { Fail "Nao consegui abrir esse arquivo como modpack. ($_)" }
+    if ($Gui) {
+        Emit ('PACK@@' + ($info | ConvertTo-Json -Compress))
+    } else {
+        Say "Modpack: $($info.nome)"
+        $info.GetEnumerator() | ForEach-Object { Write-Host "    $($_.Key): $($_.Value)" }
+    }
+    exit 0
+}
+
+if ($PSBoundParameters.ContainsKey('ImportPack')) {
+    $parts = $ImportPack -split '\|'
+    $packPath = ([string]$parts[0]).Trim('"')
+    $type = ([string]$parts[1]).Trim().ToLower()
+    $mc = ([string]$parts[2]).Trim()
+    $loaderPin = ([string]$parts[3]).Trim()
+    $newWorld = ([string]$parts[4]) -eq 'mundo-novo'
+    if ($type -notin 'fabric', 'neoforge', 'forge') { Fail 'O modpack precisa ser de Fabric, NeoForge ou Forge.' }
+    if ($mc -notmatch '^\d+(\.\d+){1,2}$') { Fail 'Versao do Minecraft invalida.' }
+    if ($loaderPin -and $loaderPin -notmatch '^[\w.+-]+$') { Fail 'Versao do carregador de mods invalida.' }
+    $label = Get-TypeLabel $type
+    try { $info = Get-PackInfo $packPath } catch { Fail "Nao consegui abrir esse arquivo como modpack. ($_)" }
+    if ($info.formato -eq 'cliente-curseforge') {
+        Fail 'Esse e o pacote do CurseForge para o jogo (so tem a lista dos mods). Baixe o "Server Pack" na pagina do modpack, na aba Files.'
+    }
+    if ($info.formato -eq 'desconhecido') { Fail 'Nao achei mods dentro desse arquivo. Ele precisa ser um Server Pack (.zip com a pasta mods) ou um .mrpack.' }
+    Assert-ServerIdle 'importar um modpack'
+
+    if (-not $loaderPin) { $loaderPin = Resolve-LoaderVersion $type $mc }
+    if (-not $loaderPin) { Fail "O $label nao tem versao para o Minecraft $mc." }
+    $javaMin = Get-JavaMinimum $mc
+
+    $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json   # relido apos o merge
+    $currentType = ([string]$Config.tipoServidor).Trim().ToLower()
+    if ($currentType -notin $ServerTypes) { $currentType = 'paper' }
+    $worldFolders = @('world', 'world_nether', 'world_the_end') | Where-Object { Test-Path (Join-Path $ServerDir $_) }
+    $resetWorld = $newWorld -and $worldFolders
+    if ($currentType -eq 'paper' -and $worldFolders -and -not $newWorld) {
+        Fail 'O servidor atual e Paper: importar um modpack exige comecar um mundo novo. Pela interface (Opcoes) isso e feito com confirmacao.'
+    }
+
+    Say "Importando o modpack $($info.nome)..."
+    try {
+        $copied = Copy-PackFiles $packPath $info
+        $tooBig = Get-ChildItem $ServerDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 95MB -and $_.FullName -notmatch '\\(libraries|versions|cache|logs)\\' -and $_.DirectoryName -ne $ServerDir } |
+            Select-Object -First 1
+        if ($tooBig) { throw "O arquivo $($tooBig.Name) tem mais de 95 MB e o GitHub nao aceita." }
+        if ($resetWorld) {
+            foreach ($folder in $worldFolders) {
+                Invoke-Git rm -r --quiet --ignore-unmatch "server/$folder"
+                Remove-Item (Join-Path $ServerDir $folder) -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        $Config | Add-Member -NotePropertyName tipoServidor -NotePropertyValue $type -Force
+        $Config | Add-Member -NotePropertyName versaoMinecraft -NotePropertyValue $mc -Force
+        $Config | Add-Member -NotePropertyName versaoLoader -NotePropertyValue $loaderPin -Force
+        if ($javaMin) { $Config | Add-Member -NotePropertyName javaVersao -NotePropertyValue $javaMin -Force }
+        [IO.File]::WriteAllText($ConfigPath, ($Config | ConvertTo-Json) + "`n")
+        Add-World
+        $message = "Modpack importado: $($info.nome) ($label $mc)"
+        if ($message.Length -gt 110) { $message = $message.Substring(0, 110) }
+        Invoke-Git commit --quiet -m "$message (por $Me)"
+    } catch {
+        # volta tudo ao que estava (a pasta estava limpa antes de comecar)
+        Test-Git reset --hard --quiet HEAD | Out-Null
+        Test-Git clean -fd --quiet | Out-Null
+        Fail "A importacao falhou e nada foi alterado. ($_)"
+    }
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --hard --quiet 'HEAD~1'
+        Test-Git clean -fd --quiet | Out-Null
+        Fail 'Nao consegui enviar para o GitHub. Nada foi alterado.'
+    }
+    $notice = "$IconSwap **$Me** instalou o modpack **$($info.nome)** no servidor ($label $loaderPin, Minecraft $mc). Todos precisam do mesmo modpack para entrar."
+    if ($resetWorld) { $notice += " O servidor vai come$([char]0xE7)ar um mundo novo." }
+    Send-Discord $notice | Out-Null
+    Say "Modpack importado: $copied arquivos. Servidor: $label $loaderPin, Minecraft $mc." 'Green'
     if ($resetWorld) { Say 'Um mundo novo sera criado na proxima vez que o servidor abrir. O anterior continua guardado nos saves.' 'Yellow' }
     exit 0
 }
@@ -989,6 +1523,33 @@ if ($UpdateProgram) {
         Fail 'Nao consegui enviar a atualizacao para o GitHub. Nada foi alterado.'
     }
     Say "Programa atualizado para a versao $latest. Feche e abra o programa de novo." 'Green'
+    exit 0
+}
+
+# ---------------------------------------------------------------- conexao direta
+
+if ($PSBoundParameters.ContainsKey('SetDirect')) {
+    $on = $SetDirect.Trim().ToLower() -eq 'on'
+    Assert-ServerIdle 'mudar a configuracao'
+    $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json   # relido apos o merge
+    $Config | Add-Member -NotePropertyName conexaoDireta -NotePropertyValue $on -Force
+    [IO.File]::WriteAllText($ConfigPath, ($Config | ConvertTo-Json) + "`n")
+    Invoke-Git add $ConfigPath
+    if (Test-Git diff --cached --quiet) {
+        Say 'A configuracao ja estava assim. Nada mudou.' 'Green'
+        exit 0
+    }
+    if ($on) { $what = 'Liga' } else { $what = 'Desliga' }
+    Invoke-Git commit --quiet -m "$what a conexao direta ($Me)"
+    if (-not (Push-WithRetry)) {
+        Invoke-Git reset --hard --quiet 'HEAD~1'
+        Fail 'Nao consegui enviar a configuracao para o GitHub. Nada foi alterado.'
+    }
+    if ($on) {
+        Say 'Conexao direta ligada. Quem hostear tenta abrir a porta no proprio roteador.' 'Green'
+    } else {
+        Say 'Conexao direta desligada.' 'Green'
+    }
     exit 0
 }
 
@@ -1190,11 +1751,15 @@ if ($lock -and $lock.host -eq $Me) {
     } else {
         Say 'Sua ultima sessao nao fechou direito. Continuando de onde parou neste PC.' 'Yellow'
         $resume = $true
-        # renova o sinal de vida para os outros verem que este PC voltou
-        Write-Lock $lock.desde $lock.endereco
+        # renova o sinal de vida (e o endereco) para os outros verem que este PC voltou
+        Open-DirectConnection
+        $address = Get-JoinAddress
+        if (-not $address) { $address = $lock.endereco }
+        Write-Lock $lock.desde $address
         Add-World
         Invoke-Git commit --quiet -m "$Me voltou a hostear"
         if (-not (Push-WithRetry)) {
+            Close-DirectConnection
             Fail 'Nao consegui enviar para o GitHub. Confira a internet e tente de novo.'
         }
     }
@@ -1233,6 +1798,7 @@ if (-not $resume) {
 
     # Pega a trava. O push e o que decide: se duas pessoas tentarem ao mesmo
     # tempo, o GitHub aceita so o primeiro.
+    Open-DirectConnection
     $address = Get-JoinAddress
     if (-not $address) { $address = $null }
     Write-Lock (Get-Date -Format 'yyyy-MM-dd HH:mm') $address
@@ -1253,9 +1819,11 @@ if (-not $resume) {
             Say 'Outra pessoa comecou a hostear no mesmo instante:' 'Yellow'
             $other = Read-Lock
             if ($other) { Show-Lock $other }
+            Close-DirectConnection
             exit 0
         }
         Invoke-Git reset --hard --quiet 'HEAD~1'
+        Close-DirectConnection
         Fail 'Nao consegui enviar para o GitHub. Confira a internet, o login e se voce tem permissao de escrita no repositorio.'
     }
     if ($tookOverFrom) {
@@ -1267,6 +1835,7 @@ if (-not $resume) {
 
 $server = $null
 $tunnel = $null
+$autoClosing = $false
 $announcedOpen = $false
 try {
     New-Item -ItemType Directory -Force $ServerDir | Out-Null
@@ -1275,8 +1844,10 @@ try {
     if (Confirm-Eula) {
         $java = Get-Java ([int]$Config.javaVersao)
         if ($ServerType -eq 'fabric') {
-            $jar = Get-FabricJar $Config.versaoMinecraft
+            $jar = Get-FabricJar $Config.versaoMinecraft $LoaderVersion
             $serverArgs = "-jar `"$jar`" nogui"
+        } elseif ($ServerType -in 'neoforge', 'forge') {
+            $serverArgs = Install-ModdedServer $ServerType $Config.versaoMinecraft $LoaderVersion $java
         } else {
             # terminal.jline=false: o Paper le comandos como texto simples, porque
             # quem entrega os comandos a ele e este script (ver o laco abaixo).
@@ -1287,20 +1858,23 @@ try {
         Say 'Servidor iniciando!' 'Green'
         if ($TunnelKey) { $tunnel = Start-Tunnel }
         $shown = Get-JoinAddress
-        if ($TunnelKey -and -not $tunnel) {
+        $reserve = ''
+        if ($DirectAddress -and $tunnel -and $TunnelAddress) { $reserve = $TunnelAddress }
+        if ($TunnelKey -and -not $tunnel -and -not $DirectAddress) {
             # o tunel nao subiu; o aviso em vermelho acima ja explicou
         } elseif ($shown) {
             Write-Host "    Seus amigos entram em: $shown" -ForegroundColor Green
+            if ($reserve) { Write-Host "    Se algum deles nao conseguir conectar, o endereco reserva e: $reserve" -ForegroundColor Green }
         } elseif ($TunnelKey) {
             Write-Host '    O tunel esta ligado, mas falta o endereco dele. Crie o tunel de Minecraft Java no site do playit' -ForegroundColor Yellow
             Write-Host '    e, depois de fechar o servidor, preencha o endereco em Opcoes > Conexao por tunel.' -ForegroundColor Yellow
         } else {
             Write-Host '    Radmin VPN nao encontrado neste PC. Abra o Radmin e entre na rede do grupo.' -ForegroundColor Yellow
         }
-        if ($TunnelKey) {
+        if ($TunnelKey -or $DirectAddress) {
             $props = Join-Path $ServerDir 'server.properties'
             if ((Test-Path $props) -and (@(Get-Content $props) -match '^white-list=false')) {
-                Write-Host '    ATENCAO: com o tunel o servidor fica aberto para a internet e a whitelist esta desligada.' -ForegroundColor Yellow
+                Write-Host '    ATENCAO: o servidor fica aberto para a internet e a whitelist esta desligada.' -ForegroundColor Yellow
                 Write-Host '    Ligue "So entra quem esta na whitelist" para so o seu grupo conseguir entrar.' -ForegroundColor Yellow
             }
         }
@@ -1309,7 +1883,7 @@ try {
 
         $javaArgs = "-Xms$Memory -Xmx$Memory $serverArgs"
         if ($Gui) { $javaArgs = "-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 $javaArgs" }
-        Emit "STATE@@running@@$shown"
+        Emit "STATE@@running@@$shown@@$reserve"
         # A entrada do servidor passa por este script: assim ele repassa o que
         # voce digita (ou o que a interface manda) e tambem consegue mandar os
         # comandos do backup automatico. A saida do servidor vai direto para a tela.
@@ -1330,6 +1904,10 @@ try {
         $orphanDeadline = $null
         $ticks = 0
 
+        Set-KeepAwake $true
+        $online = New-Object System.Collections.Generic.HashSet[string]
+        $logOffset = 0
+        $emptySince = $null
         while (-not $server.WaitForExit(250)) {
             $ticks++
 
@@ -1339,8 +1917,15 @@ try {
             if (-not $ready -and ($ticks % 4 -eq 0) -and (Test-ServerReady $logPath $server.StartTime)) {
                 $ready = $true
                 $nextBackup = (Get-Date).AddMinutes($BackupMinutes)
+                $logOffset = 0
+                if (Test-Path $logPath) { $logOffset = (Get-Item $logPath).Length }
+                $emptySince = Get-Date
+                if ($AutoCloseMinutes -gt 0) {
+                    Out-Line "    O servidor fecha sozinho se ficar $AutoCloseMinutes minutos sem ninguem online."
+                }
                 if ($shown) {
                     $where = "Entrem por: ``$shown``"
+                    if ($reserve) { $where += " (se n$([char]0xE3)o conectar: ``$reserve``)" }
                 } else {
                     $where = "Pe$([char]0xE7)am o endere$([char]0xE7)o para **$Me**."
                 }
@@ -1364,6 +1949,28 @@ try {
                     $orphanDeadline = (Get-Date).AddMinutes(5)
                 } elseif ((Get-Date) -gt $orphanDeadline) {
                     $server.Kill()
+                }
+            }
+
+            # Acompanha quem entra e sai pelo log do servidor, para fechar sozinho
+            # quando ele fica vazio por muito tempo (se a pessoa pediu isso).
+            if ($ready -and $AutoCloseMinutes -gt 0 -and -not $autoClosing -and ($ticks % 20 -eq 0)) {
+                foreach ($entry in ((Read-LogSince $logPath ([ref]$logOffset)) -split "`n")) {
+                    if ($entry -match '\]: (\S+) joined the game\s*$') {
+                        [void]$online.Add($Matches[1])
+                    } elseif ($entry -match '\]: (\S+) left the game\s*$') {
+                        [void]$online.Remove($Matches[1])
+                    }
+                }
+                if ($online.Count -gt 0) {
+                    $emptySince = $null
+                } elseif (-not $emptySince) {
+                    $emptySince = Get-Date
+                } elseif (((Get-Date) - $emptySince).TotalMinutes -ge $AutoCloseMinutes) {
+                    Out-Line ''
+                    Out-Line "==> Ninguem online ha $AutoCloseMinutes minutos. Fechando e salvando o servidor..." 'Yellow'
+                    $autoClosing = $true
+                    $queued.Add('stop')
                 }
             }
 
@@ -1393,9 +2000,14 @@ finally {
     }
     Remove-Item $PidPath -Force -ErrorAction SilentlyContinue
     if ($TunnelKey) { Stop-Tunnel $tunnel }
+    Close-DirectConnection
+    Set-KeepAwake $false
     $closedMessage = $null
     if ($announcedOpen) {
         $closedMessage = "$IconClosed **$Me** fechou o servidor. Mundo salvo; quem quiser j$([char]0xE1) pode hostear."
+        if ($autoClosing) {
+            $closedMessage = "$IconClosed O servidor de **$Me** fechou sozinho por ficar vazio. Mundo salvo; quem quiser j$([char]0xE1) pode hostear."
+        }
     }
     Save-AndRelease $closedMessage
 }
