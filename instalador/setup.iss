@@ -33,8 +33,11 @@ OutputBaseFilename=MinecraftCompartilhado-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; escolhe sozinho o idioma do Windows; so pergunta se nao for nenhum dos dois
+ShowLanguageDialog=auto
 
 [Languages]
+Name: "en"; MessagesFile: "compiler:Default.isl"
 Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Tasks]
@@ -46,14 +49,21 @@ Source: "app.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "Hostear ou entrar no servidor de Minecraft do grupo"
-Name: "{autodesktop}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "Hostear ou entrar no servidor de Minecraft do grupo"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "{cm:AppComment}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Comment: "{cm:AppComment}"; Tasks: desktopicon
 
 [Run]
-Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; Description: "Abrir o {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{#PowerShell}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"""; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [Messages]
+en.FinishedLabel=[name] was installed. The first time you open it, it asks for your group's link and downloads the server.
 ptbr.FinishedLabel=O [name] foi instalado. Na primeira vez que abrir, ele pede o link do seu grupo e baixa o servidor.
+
+[CustomMessages]
+en.AppComment=Host or join your group's Minecraft server
+ptbr.AppComment=Hostear ou entrar no servidor de Minecraft do grupo
+en.UninstallNote=The program was removed.%n%nThe folder with the group's world (by default C:\MinecraftCompartilhado) was not deleted. If you won't use it anymore, you can delete it by hand: the world is still kept on GitHub.
+ptbr.UninstallNote=O programa foi removido.%n%nA pasta com o mundo do grupo (por padrão C:\MinecraftCompartilhado) não foi apagada. Se não for mais usar, pode apagá-la à mão: o mundo continua guardado no GitHub.
 
 [Code]
 // A desinstalacao remove so o programa. O mundo do grupo fica na pasta dele
@@ -63,8 +73,5 @@ ptbr.FinishedLabel=O [name] foi instalado. Na primeira vez que abrir, ele pede o
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
-    SuppressibleMsgBox('O programa foi removido.' + #13#10 + #13#10 +
-           'A pasta com o mundo do grupo (por padrão C:\MinecraftCompartilhado) não foi apagada. ' +
-           'Se não for mais usar, pode apagá-la à mão: o mundo continua guardado no GitHub.',
-           mbInformation, MB_OK, IDOK);
+    SuppressibleMsgBox(CustomMessage('UninstallNote'), mbInformation, MB_OK, IDOK);
 end;

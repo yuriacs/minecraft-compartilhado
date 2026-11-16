@@ -8,5 +8,6 @@
   "discordWebhook": "",
   "tunelChave": "",
   "tunelEndereco": "",
-  "conexaoDireta": false
+  "conexaoDireta": false,
+  "idiomaGrupo": ""
 }

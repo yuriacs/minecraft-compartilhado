@@ -1,131 +1,135 @@
 # Minecraft Compartilhado
 
-Um servidor de Minecraft (Java, Paper) para jogar com os amigos **sem pagar host e sem depender de uma pessoa só**.
+**English** · [Português](README.pt-BR.md)
 
-O mundo fica guardado num repositório privado do GitHub. Qualquer pessoa do grupo pode abrir o servidor no próprio PC: o programa baixa o mundo mais recente, hosteia, e ao fechar envia o mundo de volta. Na próxima vez, outra pessoa pode hostear de onde vocês pararam.
+A Minecraft server (Java, Paper) to play with your friends **without paying for hosting and without depending on a single person**.
 
-- Só uma pessoa hosteia por vez; uma trava no repositório impede dois hosts com mundos diferentes.
-- Backup automático a cada 20 minutos enquanto o servidor está aberto.
-- Se o PC do host cair, outra pessoa assume a partir do último backup.
-- Tudo por uma janela: hostear, parar e salvar, ver quem está online, whitelist e admin, restaurar um save anterior.
-- Plugins (Paper) ou mods (Fabric), com troca de versão do Minecraft pela própria janela.
-- Instalador próprio (com ícone e desinstalador, sem pedir permissão de administrador) e avisos no Discord quando o servidor abre e fecha.
-- Java e Paper são baixados sozinhos.
+The world is kept in a private GitHub repository. Anyone in the group can open the server on their own PC: the program downloads the latest world, hosts it, and when it closes it uploads the world back. Next time, someone else can host from where you left off.
 
-Funciona em **Windows**. Quem só vai jogar precisa apenas do Minecraft Java original.
+- Only one person hosts at a time; a lock in the repository prevents two hosts with different worlds.
+- Automatic backup every 20 minutes while the server is open.
+- If the host's PC goes down, someone else takes over from the latest backup.
+- Everything from one window: host, stop and save, see who is online, whitelist and admin, restore a previous save.
+- Plugins (Paper) or mods (Fabric, NeoForge, Forge), modpack import and Minecraft version changes from the window itself.
+- Its own installer (with an icon and uninstaller, no administrator permission needed) and Discord notifications when the server opens and closes.
+- Java and the server are downloaded automatically.
+- In English or Portuguese, following the Windows language (it can be changed in the program).
 
-## Baixar
+Works on **Windows**. People who only play just need the official Minecraft Java Edition.
 
-**[Baixe o instalador na página de Releases](https://github.com/yuriacs/minecraft-compartilhado/releases/latest)** (arquivo `MinecraftCompartilhado-Setup.exe`).
+## Download
 
-O instalador é gerado automaticamente pelo GitHub a partir do código deste repositório ([veja como](.github/workflows/instalador.yml)), e a página de cada versão traz o SHA-256 do arquivo. Ele ainda não tem assinatura digital, então o Windows pode mostrar "O Windows protegeu o computador": clique em **Mais informações → Executar assim mesmo**.
+**[Download the installer from the Releases page](https://github.com/yuriacs/minecraft-compartilhado/releases/latest)** (file `MinecraftCompartilhado-Setup.exe`).
 
-Antes de instalar, o seu grupo precisa ter um servidor: veja a seção seguinte se você é quem vai criar.
+The installer is built automatically by GitHub from the code in this repository ([see how](.github/workflows/instalador.yml)), and each release page shows the file's SHA-256. It doesn't have a digital signature yet, so Windows may show "Windows protected your PC": click **More info → Run anyway**.
 
-## Este repositório é um modelo
+Before installing, your group needs a server: see the next section if you are the one creating it.
 
-Aqui só está o programa, sem mundo nenhum. Você não joga a partir dele: você **cria uma cópia privada para o seu grupo**, e é nela que o mundo de vocês fica.
+## This repository is a template
 
-Não dá para hostear clonando este repositório diretamente, porque ninguém além do dono consegue enviar nada para ele.
+It only has the program, no world. You don't play from it: you **create a private copy for your group**, and that is where your world lives.
 
-## Criar o servidor do seu grupo (uma pessoa faz, uma vez)
+You can't host by cloning this repository directly, because nobody but its owner can upload anything to it.
 
-1. Entre na sua conta do GitHub e clique em **Use this template → Create a new repository**, no topo desta página.
-2. Escolha um nome e marque **Private**. O repositório vai guardar o mundo, os nicks dos jogadores e o endereço de quem hosteia, então não deixe público.
-3. No repositório novo, vá em **Settings → Collaborators** e adicione os amigos que vão poder hostear.
-4. Instale o programa (seção "Instalar" abaixo) e, na primeira tela, cole o link do repositório que você acabou de criar.
-5. Clique em **Hostear servidor**. Na primeira vez o mundo é gerado; feche com **Parar e salvar** para ele subir ao GitHub.
-6. Passe para os amigos o link do repositório do grupo e o link do instalador.
+## Create your group's server (one person, once)
 
-Servidores novos nascem com a whitelist ligada e vazia. Na primeira vez, com o servidor aberto, desmarque **Só entra quem está na whitelist** ou ponha os nicks do grupo nela, senão ninguém entra.
+1. Sign in to GitHub and click **Use this template → Create a new repository**, at the top of this page.
+2. Pick a name and select **Private**. The repository will store the world, the players' nicknames and the address of whoever is hosting, so don't make it public.
+3. In the new repository, go to **Settings → Collaborators** and add the friends who will be able to host.
+4. Install the program (see "Install" below) and, on the first screen, paste the link of the repository you just created.
+5. Click **Host server**. The first time, the world is generated; close it with **Stop and save** so it gets uploaded to GitHub.
+6. Send your friends the link to the group's repository and the link to the installer.
 
-## Instalar (uma vez por pessoa)
+New servers start with the whitelist on and empty. The first time, with the server open, uncheck **Only whitelisted players can join** or add your group's nicknames to it, otherwise nobody can join.
 
-Cada pessoa que for hostear precisa de uma conta no GitHub convidada como colaboradora do repositório do grupo, com o convite já aceito.
+## Install (once per person)
 
-1. Baixe o `MinecraftCompartilhado-Setup.exe` na [página de Releases](https://github.com/yuriacs/minecraft-compartilhado/releases/latest) e execute. Ele não pede permissão de administrador e cria o atalho **Minecraft Compartilhado** no menu Iniciar e na área de trabalho.
-2. Na primeira vez que abrir, cole o **link do grupo** (o endereço do repositório privado do grupo, que o dono passa) e escolha seu nick. O programa instala o Git se faltar e baixa o servidor para `C:\MinecraftCompartilhado`. Se abrir uma janela de login do GitHub, entre com a conta que foi convidada.
+Everyone who will host needs a GitHub account invited as a collaborator to the group's repository, with the invitation already accepted.
 
-Para remover, use **Configurações → Aplicativos** do Windows. A pasta do mundo não é apagada junto.
+1. Download `MinecraftCompartilhado-Setup.exe` from the [Releases page](https://github.com/yuriacs/minecraft-compartilhado/releases/latest) and run it. It doesn't ask for administrator permission and creates a **Minecraft Compartilhado** shortcut in the Start menu and on the desktop.
+2. The first time you open it, paste the **group link** (the address of the group's private repository, which the owner gives you) and choose your nickname. The program installs Git if it's missing and downloads the server to `C:\MinecraftCompartilhado`. If a GitHub sign-in window opens, sign in with the account that was invited.
 
-## Hostear
+To remove it, use Windows **Settings → Apps**. The world folder is not deleted along with it.
 
-1. Abra o atalho **Minecraft Compartilhado**. A janela mostra se alguém já está hosteando e o endereço para entrar.
-2. Clique em **Hostear servidor**. Na primeira vez ele baixa o Java e o Paper e pergunta se você aceita a [EULA do Minecraft](https://aka.ms/MinecraftEULA).
-3. Passe para os amigos o endereço que aparece (botão **Copiar endereço**). Você mesmo entra por `localhost`.
-4. Para fechar: clique em **Parar e salvar** e espere a mensagem de mundo salvo. Fechar a janela no X também pergunta se quer parar e salvar.
+## Hosting
 
-Na primeira vez o Windows pergunta se o Java pode usar a rede: permita, senão ninguém consegue entrar.
+1. Open the **Minecraft Compartilhado** shortcut. The window shows whether someone is already hosting and the address to join.
+2. Click **Host server**. The first time, it downloads Java and the server and asks whether you accept the [Minecraft EULA](https://aka.ms/MinecraftEULA).
+3. Give your friends the address it shows (**Copy address** button). You join through `localhost`.
+4. To close: click **Stop and save** and wait for the "world saved" message. Closing the window with the X also asks whether you want to stop and save.
 
-O PC de quem hosteia precisa ficar ligado, com a janela aberta, enquanto os outros jogam.
+The first time, Windows asks whether Java may use the network: allow it, otherwise nobody can join.
 
-## Como os amigos se conectam
+The host's PC needs to stay on, with the window open, while the others play.
 
-O servidor roda no PC de quem está hosteando, então os outros precisam alcançar esse PC. O programa não resolve isso sozinho; escolham um jeito:
+## How friends connect
 
-- **Túnel do playit.gg**: quem joga não instala nada, só digita um endereço fixo. O programa sobe o túnel sozinho quando alguém hosteia. Veja como ligar em "Opções → Conexão por túnel", mais abaixo.
-- **[Radmin VPN](https://www.radmin-vpn.com/)**: todos instalam e entram na mesma rede. O programa detecta o IP do Radmin do host e mostra o endereço pronto para copiar.
-- **Outra VPN** (Tailscale, ZeroTier, Hamachi) ou **porta aberta no roteador** (25565): também funcionam, mas o programa não mostra o endereço; o host informa o próprio IP.
+The server runs on the host's PC, so the others need to reach that PC. Choose a way:
 
-Como o host muda, o endereço muda junto. A janela do programa e os avisos do Discord sempre mostram quem está hosteando.
+- **Direct connection** (Options): the program asks the host's router to open the port and friends connect straight to the host's public IP, with the lowest ping. It only works if the router allows it (UPnP) and the ISP doesn't share the IP (CGNAT); otherwise it falls back to the options below.
+- **playit.gg tunnel** (Options): players don't install anything, they just type a fixed address. The program starts the tunnel by itself when someone hosts.
+- **[Radmin VPN](https://www.radmin-vpn.com/)**: everyone installs it and joins the same network. The program detects the host's Radmin IP and shows the address ready to copy.
+- **Another VPN** (Tailscale, ZeroTier, Hamachi) or a **manually opened router port** (25565): these also work, but the program doesn't show the address; the host shares their own IP.
 
-## Jogadores, whitelist e admin
+Since the host changes, the address changes with it. The program window and the Discord notifications always show who is hosting.
 
-Com o servidor aberto, a janela mostra à direita quem está online. Clique num jogador (ou digite o nick) e use os botões:
+## Players, whitelist and admin
 
-- **Pôr na whitelist / Tirar da whitelist**: libera ou bloqueia a entrada daquele nick.
-- **Dar admin (op) / Tirar admin**.
-- **Expulsar do servidor**.
-- **Só entra quem está na whitelist**: liga ou desliga a whitelist inteira.
+With the server open, the window shows on the right who is online. Click a player (or type the nickname) and use the buttons:
 
-Qualquer outro comando do servidor vai na caixa de texto embaixo, sem a barra.
+- **Add to whitelist / Unwhitelist**: allows or blocks that nickname.
+- **Make admin (op) / Remove admin**.
+- **Kick from server**.
+- **Only whitelisted players can join**: turns the whole whitelist on or off.
 
-## Opções
+Any other server command goes in the text box at the bottom, without the slash.
 
-Quase tudo em **Opções** só funciona com o servidor fechado, porque mexe no repositório do grupo todo.
+## Options
 
-- **Plugins do servidor** (ou **Mods do servidor**, se o servidor for Fabric): adiciona e remove os arquivos `.jar` e envia a mudança para o grupo. Não coloque arquivos direto na pasta: use esta opção, que é ela que grava no GitHub.
-- **Tipo de servidor e versão do Minecraft**: escolhe entre **Paper** (aceita plugins; quem joga usa o Minecraft normal) e um servidor com mods (**Fabric**, ou **NeoForge** e **Forge**, que ainda são experimentais), e a versão do jogo. O programa acerta sozinho a versão do Java e a do carregador de mods. Trocar entre Paper e um servidor com mods começa um mundo novo, porque um não abre o mundo do outro; o mundo anterior continua guardado nos saves.
-- **Importar modpack**: instala no servidor um modpack inteiro, a partir de um **Server Pack** (o `.zip` de servidor que os modpacks do CurseForge oferecem na aba Files) ou de um **.mrpack** do Modrinth. O programa deduz o carregador e a versão, você confere, e ele troca os mods e as configurações do servidor. Quem joga instala o mesmo modpack pelo aplicativo do CurseForge ou do Modrinth. O pacote do CurseForge para o jogo (o que só tem a lista de mods) não serve: precisa ser o Server Pack.
-- **Mods para jogar neste PC** (só aparece com servidor de mods): explica como instalar o carregador de mods e copia os mods do grupo para a pasta de mods do seu Minecraft, sem apagar os que você colocou por conta própria. Com mods, quem só joga também precisa instalar este programa.
-- **Ajustes deste PC**: quanto de memória o servidor usa quando você hosteia, e se ele deve **fechar sozinho quando esvaziar** (salva o mundo e libera a vez depois de um tempo sem ninguém online). Valem só para o seu PC e podem ser mudados mesmo com o servidor de outra pessoa aberto. Enquanto você hosteia, o programa já impede o PC de suspender por inatividade.
-- **Atualizar o programa** (aparece quando há versão nova): baixa a versão mais recente do programa e grava para o grupo todo.
-- **Restaurar um save anterior**: mostra a lista de saves e backups e volta o mundo para o escolhido. O mundo de antes não é apagado; ele continua na lista.
-- **Compactar o histórico de saves**: mantém só os N saves mais recentes e apaga os mais antigos de vez, para o repositório não crescer sem limite. Os outros PCs do grupo se realinham sozinhos na próxima vez que abrirem o programa.
-- **Avisos no Discord**: o programa avisa num canal quando o servidor abre (com o endereço), fecha, ou muda de host. No Discord, no canal desejado: **Editar canal → Integrações → Webhooks → Novo webhook → Copiar URL do webhook**; cole o link na janela que abre. Para desligar, deixe o campo em branco. Quem tem o link do webhook consegue postar no canal, então ele só deve ficar em repositório privado.
+Almost everything in **Options** only works with the server closed, because it changes the whole group's repository.
 
-- **Conexão direta (porta no roteador)**: quem hosteia pede ao próprio roteador para abrir a porta do servidor (UPnP), e os amigos conectam direto no IP público dele, sem Radmin e com o menor ping. Só funciona em parte das redes: o roteador precisa aceitar isso e a operadora não pode compartilhar o IP (CGNAT). Quando não dá, o programa avisa e segue pelo túnel ou pelo Radmin; se o túnel estiver configurado, ele fica no ar como endereço reserva. O endereço divulgado passa a ser o IP da casa de quem hosteia.
-- **Conexão por túnel (sem Radmin)**: usa o [playit.gg](https://playit.gg) (plano gratuito) para dar ao servidor um endereço público. Quem hosteia sobe o túnel automaticamente; quem joga não instala nada, só digita o endereço. Como configurar:
-  1. Crie uma conta no playit.gg e adicione um agente do tipo **Docker**. Copie o valor que aparece depois de `SECRET_KEY=` (não precisa rodar o comando).
-  2. Em **Opções → Conexão por túnel**, cole a chave e salve, deixando o endereço em branco.
-  3. Clique em **Hostear servidor** uma vez. O programa baixa o agente oficial do playit, e o site passa a reconhecê-lo.
-  4. No site do playit, crie um túnel **Minecraft Java** para a porta local `25565` e copie o endereço que ele mostra (algo como `nome.gl.joinmc.link`).
-  5. Feche o servidor, volte em **Opções → Conexão por túnel** e preencha o endereço (a chave pode ficar em branco, ela é mantida).
+- **Server plugins** (or **Server mods**, on a modded server): adds and removes `.jar` files and uploads the change for the group. Don't put files straight into the folder: use this option, which is what saves to GitHub.
+- **Server type and Minecraft version**: chooses between **Paper** (accepts plugins; players use regular Minecraft) and a modded server (**Fabric**, or **NeoForge** and **Forge**, which are still experimental), and the game version. The program picks the right Java and mod loader versions. Switching between Paper and a modded server starts a new world, because one can't open the other's world; the previous world is still kept in the saves.
+- **Import modpack**: installs a whole modpack on the server, from a **Server Pack** (the server `.zip` that CurseForge modpacks offer in the Files tab) or a Modrinth **.mrpack**. The program works out the loader and versions, you check them, and it replaces the server's mods and configs. Players install the same modpack through the CurseForge or Modrinth app. The CurseForge pack for the game (the one that only has the list of mods) won't work: it has to be the Server Pack.
+- **Mods to play on this PC** (only shown on a modded server): explains how to install the mod loader and copies the group's mods into your Minecraft mods folder, without deleting the ones you added yourself. With mods, people who only play also need this program.
+- **This PC's settings**: how much memory the server uses when you host, the program language, and whether it should **close by itself when empty** (it saves the world and frees the turn after some time with nobody online). They apply only to your PC and can be changed even while someone else's server is open. While you host, the program already keeps the PC from going to sleep due to inactivity.
+- **Update the program** (shown when there is a new version): downloads the latest version of the program and saves it for the whole group.
+- **Restore a previous save**: shows the list of saves and backups and takes the world back to the chosen one. The world from before is not deleted; it stays in the list.
+- **Compact the save history**: keeps only the N most recent saves and deletes the older ones for good, so the repository doesn't grow without limit. The group's other PCs realign by themselves the next time they open the program.
+- **Discord notifications**: the program posts in a channel when the server opens (with the address), closes, or changes host. In Discord, on the channel you want: **Edit Channel → Integrations → Webhooks → New Webhook → Copy Webhook URL**; paste the link in the window that opens. To turn it off, leave the field empty. Anyone with the webhook link can post in the channel, so it should only be kept in a private repository.
+- **Direct connection (router port)**: the host asks their own router to open the server port (UPnP), and friends connect directly to the host's public IP, without Radmin and with the lowest ping. If the tunnel is set up, it stays on as a backup address. The shared address becomes the public IP of the host's home.
+- **Tunnel connection (no Radmin)**: uses [playit.gg](https://playit.gg) (free plan) to give the server a public address. The host starts the tunnel automatically; players don't install anything, they just type the address. How to set it up:
+  1. Create a playit.gg account and add an agent of type **Docker**. Copy the value shown after `SECRET_KEY=` (you don't need to run the command).
+  2. In **Options → Tunnel connection**, paste the key and save, leaving the address empty.
+  3. Click **Host server** once. The program downloads the official playit agent, and the site recognizes it.
+  4. On the playit site, create a **Minecraft Java** tunnel for local port `25565` and copy the address it shows (something like `name.gl.joinmc.link`).
+  5. Close the server, go back to **Options → Tunnel connection** and fill in the address (the key can stay empty; it is kept).
 
-  Com o túnel, o servidor fica alcançável pela internet: mantenha ligada a opção **Só entra quem está na whitelist**. A conexão passa pelos servidores do playit, então o ping tende a ser um pouco maior que no Radmin. A chave fica no `config.json`; mantenha o repositório privado.
+  With the tunnel or the direct connection, the server is reachable from the internet: keep **Only whitelisted players can join** on. The tunnel goes through playit's servers, so the ping tends to be a bit higher than with Radmin. The key is stored in `config.json`; keep the repository private.
 
-## Como funciona
+## How it works
 
-- Ao hostear, o programa cria o arquivo `host.lock.json` (a "trava") e dá push. Se duas pessoas tentarem ao mesmo tempo, o GitHub aceita só o primeiro push.
-- Com o servidor aberto, a cada 20 minutos ele manda o Minecraft gravar o mundo, faz um commit e envia. Cada backup também atualiza o "sinal de vida" do host na trava.
-- Ao fechar, ele apaga a trava, faz commit de tudo em `server/` e dá push.
-- Se o PC do host desligar no meio, a trava fica no nome dele. Quando ele abrir o programa de novo, pode enviar o que ficou no PC ou continuar hosteando.
-- Se ele não voltar, depois de uns 45 minutos sem sinal a janela avisa que ele pode ter caído, e outra pessoa pode **Assumir o servidor** e continuar do último backup.
+- When hosting, the program creates the `host.lock.json` file (the "lock") and pushes it. If two people try at the same time, GitHub accepts only the first push.
+- With the server open, every 20 minutes it tells Minecraft to save the world, makes a commit and pushes it. Each backup also updates the host's "heartbeat" in the lock.
+- When closing, it removes the lock, commits everything in `server/` and pushes.
+- If the host's PC turns off midway, the lock stays in their name. When they open the program again, they can upload what was left on the PC or keep hosting.
+- If they don't come back, after about 45 minutes without a heartbeat the window warns that they may have dropped, and someone else can **Take over the server** and continue from the latest backup.
 
-## Configuração
+## Configuration
 
-- `scripts/config.json`: guarda o que vale para o grupo (tipo e versão do servidor, memória padrão, intervalo do backup em `backupMinutos`, Discord e túnel). Quase tudo se muda por **Opções**; só o intervalo do backup e a memória padrão do grupo (`memoria`) são editados à mão, pelo site do GitHub (lápis **Edit**).
-- `server/server.properties`, `ops.json`, `whitelist.json` e os plugins em `server/plugins/` são sincronizados junto com o mundo.
-- Só entra quem tem Minecraft original, a não ser que você mude `online-mode` no `server.properties`.
+- `scripts/config.json`: stores what applies to the group (server type and version, default memory, backup interval in `backupMinutos`, Discord, tunnel and direct connection). Almost everything is changed through **Options**; only the backup interval, the group's default memory (`memoria`) and the language of the Discord notifications (`idiomaGrupo`: `"en"` or `"pt"`; empty uses each host's language) are edited by hand, on the GitHub website (pencil **Edit**).
+- `server/server.properties`, `ops.json`, `whitelist.json` and the plugins in `server/plugins/` are synced along with the world.
+- Only people with official Minecraft can join, unless you change `online-mode` in `server.properties`.
+- The program code, and the messages saved in the repository history, use Portuguese names (for example `config.json` keys and commit messages). That doesn't affect what you see in the program.
 
-## Limites
+## Limits
 
-- O GitHub recusa arquivos acima de 100 MB e recomenda repositórios de até alguns GB. Cada sessão e cada backup criam um commit, então o histórico cresce; use **Compactar o histórico de saves** de tempos em tempos. No GitHub, o espaço dos saves apagados só é liberado depois de um tempo.
-- Se o PC do host quebrar de vez no meio de uma sessão, perde-se o que foi jogado desde o último backup automático (até 20 minutos).
-- Se alguém assumir o servidor enquanto o host original ainda está jogando (por exemplo, só a internet dele caiu), o que for jogado no PC dele depois disso não é salvo.
+- GitHub rejects files over 100 MB and recommends repositories of up to a few GB. Each session and each backup creates a commit, so the history grows; use **Compact the save history** from time to time. On GitHub, the space of deleted saves is only freed after a while.
+- If the host's PC breaks for good in the middle of a session, whatever was played since the latest automatic backup is lost (up to 20 minutes).
+- If someone takes over the server while the original host is still playing (for example, only their internet dropped), whatever is played on the original host's PC after that is not saved.
 
-## Aviso
+## Disclaimer
 
-Projeto independente, sem vínculo com a Mojang ou a Microsoft. Para rodar o servidor, cada host precisa aceitar a EULA do Minecraft.
+Independent project, not affiliated with Mojang or Microsoft. To run the server, each host needs to accept the Minecraft EULA.
 
-O código deste repositório está sob a licença [MIT](LICENSE).
+The code in this repository is under the [MIT](LICENSE) license.

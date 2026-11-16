@@ -32,6 +32,39 @@ $GroupFile = Join-Path $DataDir 'grupo.json'      # guarda a pasta do servidor d
 $IconPath  = Join-Path $PSScriptRoot 'app.ico'
 $DefaultFolder = Join-Path $env:SystemDrive 'MinecraftCompartilhado'
 
+# ---------------------------------------------------------------- idioma
+#
+# Portugues ou ingles, conforme o idioma do Windows.
+$Lang = ''
+try { $Lang = [string](Get-Content (Join-Path $DataDir 'local.json') -Raw -ErrorAction Stop | ConvertFrom-Json).idioma } catch { }
+if ($Lang -notin 'pt', 'en') {
+    $Lang = 'en'
+    if ([Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq 'pt') { $Lang = 'pt' }
+}
+function Tx($pt, $en) {
+    if ($Lang -eq 'en') { return $en }
+    return $pt
+}
+
+$XamlEnglish = [ordered]@{
+    'Entrar no servidor do grupo' = 'Join the group''s server'
+    'Isso só precisa ser feito uma vez neste PC. O programa baixa o servidor do seu grupo e, daí em diante, abre direto.' = 'This only needs to be done once on this PC. The program downloads your group''s server and, from then on, opens directly.'
+    'Link do grupo' = 'Group link'
+    'É o endereço do repositório do grupo no GitHub. Quem criou o grupo te passa. Ex.: https://github.com/fulano/nosso-servidor' = 'It is the address of the group''s repository on GitHub. Whoever created the group gives it to you. E.g.: https://github.com/someone/our-server'
+    'Seu nick' = 'Your nickname'
+    'Aparece para os outros quando você estiver hosteando.' = 'Others see it when you are hosting.'
+    'Pasta do servidor neste PC' = 'Server folder on this PC'
+    'Onde o mundo fica guardado. Não use uma pasta do OneDrive ou do Google Drive.' = 'Where the world is kept. Don''t use a OneDrive or Google Drive folder.'
+    'Entrar no grupo' = 'Join the group'
+}
+function Convert-Xaml([string]$text) {
+    if ($Lang -ne 'en') { return $text }
+    foreach ($pair in $XamlEnglish.GetEnumerator()) {
+        $text = $text.Replace('="' + $pair.Key + '"', '="' + $pair.Value + '"')
+    }
+    return $text
+}
+
 # ---------------------------------------------------------------- utilidades
 
 # Procura o Git no PATH e nas pastas padrao e garante que ele fique no PATH
@@ -86,7 +119,7 @@ function Invoke-GitQuiet($arguments) {
 # Mostra a janela, faz o download do servidor do grupo e devolve a pasta
 # (ou $null se a pessoa fechar a janela sem concluir).
 function Show-SetupWindow {
-    [xml]$xaml = @'
+    [xml]$xaml = Convert-Xaml @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Minecraft Compartilhado" Width="620" SizeToContent="Height" ResizeMode="CanMinimize"
@@ -174,7 +207,7 @@ function Show-SetupWindow {
     $window.Add_Closing({
         if ($script:Setup.Clone -and -not $script:Setup.Clone.HasExited) {
             $_.Cancel = $true
-            [Windows.MessageBox]::Show($script:Setup.Window, 'Ainda estou baixando o servidor do grupo. Espere terminar.',
+            [Windows.MessageBox]::Show($script:Setup.Window, (Tx 'Ainda estou baixando o servidor do grupo. Espere terminar.' 'I''m still downloading the group''s server. Wait for it to finish.'),
                 'Minecraft Compartilhado', 'OK', 'Information') | Out-Null
         }
     })
@@ -198,7 +231,7 @@ function Set-SetupBusy($busy) {
 function Complete-Setup {
     $folder = $script:Setup.Folder
     if (-not (Test-Path (Join-Path $folder 'scripts\gui.ps1'))) {
-        Set-SetupStatus 'O link foi baixado, mas esse repositório não tem o programa do Minecraft Compartilhado. Confira se o link é o do seu grupo.' '#F85149'
+        Set-SetupStatus (Tx 'O link foi baixado, mas esse repositório não tem o programa do Minecraft Compartilhado. Confira se o link é o do seu grupo.' 'The link was downloaded, but that repository doesn''t have the Minecraft Compartilhado program. Check that it is your group''s link.') '#F85149'
         Set-SetupBusy $false
         return
     }
@@ -223,10 +256,10 @@ function Watch-SetupClone {
         return
     }
     $page = (($script:Setup.RepoBox.Text.Trim().TrimEnd('/')) -replace '\.git$', '')
-    Set-SetupStatus ("O GitHub não deixou baixar. Os motivos mais comuns:`n" +
-        "1. Você ainda não aceitou o convite. Abra no navegador: $page/invitations`n" +
-        "2. Você entrou com uma conta do GitHub diferente da que foi convidada.`n" +
-        "3. Quem criou o grupo ainda não te adicionou como colaborador.") '#F85149'
+    Set-SetupStatus ((Tx "O GitHub não deixou baixar. Os motivos mais comuns:`n" "GitHub didn't allow the download. The most common reasons:`n") +
+        (Tx "1. Você ainda não aceitou o convite. Abra no navegador: $page/invitations`n" "1. You haven't accepted the invitation yet. Open in your browser: $page/invitations`n") +
+        (Tx "2. Você entrou com uma conta do GitHub diferente da que foi convidada.`n" "2. You signed in with a different GitHub account from the one that was invited.`n") +
+        (Tx "3. Quem criou o grupo ainda não te adicionou como colaborador." "3. Whoever created the group hasn't added you as a collaborator yet.")) '#F85149'
     Set-SetupBusy $false
 }
 
@@ -237,27 +270,27 @@ function Start-Setup {
     $nick = $script:Setup.NickBox.Text.Trim()
     $folderText = $script:Setup.FolderBox.Text.Trim()
     if ($repo -notmatch '^https://github\.com/[\w.-]+/[\w.-]+/?$') {
-        Set-SetupStatus 'O link do grupo precisa ser o endereço de um repositório do GitHub, como https://github.com/fulano/nosso-servidor' '#F85149'
+        Set-SetupStatus (Tx 'O link do grupo precisa ser o endereço de um repositório do GitHub, como https://github.com/fulano/nosso-servidor' 'The group link must be the address of a GitHub repository, like https://github.com/someone/our-server') '#F85149'
         return
     }
     if ($nick -notmatch '^[\w .-]{2,32}$') {
-        Set-SetupStatus 'Escolha um nick de 2 a 32 caracteres, só com letras, números, espaço, ponto, hífen ou sublinhado.' '#F85149'
+        Set-SetupStatus (Tx 'Escolha um nick de 2 a 32 caracteres, só com letras, números, espaço, ponto, hífen ou sublinhado.' 'Choose a nickname of 2 to 32 characters, using only letters, numbers, space, dot, hyphen or underscore.') '#F85149'
         return
     }
     if (-not $folderText) { $folderText = $DefaultFolder }
     try { $folder = [IO.Path]::GetFullPath($folderText) } catch {
-        Set-SetupStatus 'Esse caminho de pasta não é válido.' '#F85149'
+        Set-SetupStatus (Tx 'Esse caminho de pasta não é válido.' 'That folder path is not valid.') '#F85149'
         return
     }
     $script:Setup.Folder = $folder
 
     if (-not (Find-Git)) {
         $hasWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
-        $question = "O Git não está instalado neste PC. Ele é o programa que baixa e envia o mundo.`n`n"
+        $question = (Tx "O Git não está instalado neste PC. Ele é o programa que baixa e envia o mundo.`n`n" "Git is not installed on this PC. It is the program that downloads and uploads the world.`n`n")
         if ($hasWinget) {
-            $question += 'Instalar o Git agora? Vai abrir uma janela do instalador do Windows, que pode pedir permissão.'
+            $question += (Tx 'Instalar o Git agora? Vai abrir uma janela do instalador do Windows, que pode pedir permissão.' 'Install Git now? A Windows installer window will open, which may ask for permission.')
         } else {
-            $question += 'Abrir a página de download do Git? Instale com as opções padrão e depois clique em Entrar no grupo de novo.'
+            $question += (Tx 'Abrir a página de download do Git? Instale com as opções padrão e depois clique em Entrar no grupo de novo.' 'Open the Git download page? Install it with the default options and then click Join the group again.')
         }
         $answer = [Windows.MessageBox]::Show($window, $question, 'Minecraft Compartilhado', 'YesNo', 'Question')
         if ($answer -ne 'Yes') { return }
@@ -265,10 +298,10 @@ function Start-Setup {
             Start-Process 'https://git-scm.com/download/win'
             return
         }
-        Set-SetupStatus 'Instalando o Git... acompanhe a janela que abriu.'
+        Set-SetupStatus (Tx 'Instalando o Git... acompanhe a janela que abriu.' 'Installing Git... follow the window that opened.')
         Start-Process winget -ArgumentList 'install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements' -Wait
         if (-not (Find-Git)) {
-            Set-SetupStatus 'A instalação do Git não terminou. Tente de novo, ou instale pelo site git-scm.com e volte aqui.' '#F85149'
+            Set-SetupStatus (Tx 'A instalação do Git não terminou. Tente de novo, ou instale pelo site git-scm.com e volte aqui.' 'The Git installation didn''t finish. Try again, or install it from git-scm.com and come back here.') '#F85149'
             return
         }
     }
@@ -277,19 +310,19 @@ function Start-Setup {
         # ja existe um servidor nessa pasta (instalacao anterior): reaproveita
         $existing = Invoke-GitQuiet "-C `"$folder`" remote get-url origin"
         if ((Get-RepoKey $existing) -ne (Get-RepoKey $repo)) {
-            Set-SetupStatus "Essa pasta já tem o servidor de outro grupo ($existing). Escolha outra pasta." '#F85149'
+            Set-SetupStatus (Tx "Essa pasta já tem o servidor de outro grupo ($existing). Escolha outra pasta." "That folder already has another group's server ($existing). Choose another folder.") '#F85149'
             return
         }
         Complete-Setup
         return
     }
     if ((Test-Path $folder) -and (Get-ChildItem $folder -Force | Select-Object -First 1)) {
-        Set-SetupStatus 'Essa pasta já existe e tem outras coisas dentro. Escolha uma pasta nova ou vazia.' '#F85149'
+        Set-SetupStatus (Tx 'Essa pasta já existe e tem outras coisas dentro. Escolha uma pasta nova ou vazia.' 'That folder already exists and has other things in it. Choose a new or empty folder.') '#F85149'
         return
     }
 
     Set-SetupBusy $true
-    Set-SetupStatus 'Baixando o servidor do grupo... Se abrir uma janela de login do GitHub, entre com a conta que foi convidada para o grupo.'
+    Set-SetupStatus (Tx 'Baixando o servidor do grupo... Se abrir uma janela de login do GitHub, entre com a conta que foi convidada para o grupo.' 'Downloading the group''s server... If a GitHub sign-in window opens, sign in with the account that was invited to the group.')
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'git'
     $psi.Arguments = "clone `"$repo`" `"$folder`""
